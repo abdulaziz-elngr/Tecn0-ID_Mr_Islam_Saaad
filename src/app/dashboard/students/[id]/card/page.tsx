@@ -5,6 +5,7 @@ import { useI18n } from "@/lib/i18n";
 import { useApi } from "@/lib/client";
 import { ErrorNotice, PageHeader } from "@/components/ui";
 import { Barcode } from "@/components/Barcode";
+import { encodeCode128 } from "@/lib/barcode";
 
 interface ProfileData {
   student: {
@@ -14,14 +15,89 @@ interface ProfileData {
   };
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /**
- * Barcode sticker printing (spec §6, §7).
+ * Prints ONLY the sticker (name + barcode + ID) from a clean, minimal document
+ * inside a hidden iframe — so none of the app's layout (sidebar, header, padding,
+ * min-height…) can change the print shape.
  *
- * The sticker contains only: barcode, student name, student ID.
- * Paper size and margins are controlled entirely from the browser's print
- * dialog / printer settings — the app does not force any size. The sticker
- * stretches to fill whatever page size the printer is set to.
+ * Paper size, orientation and margins come from the browser's print dialog /
+ * printer settings. Everything is sized relative to the page width (cqw), so it
+ * scales with whatever paper size is selected.
  */
+function printSticker(name: string, code: string) {
+  let barsSvg = "";
+  try {
+    const symbol = encodeCode128(code);
+    const rects = symbol.bars
+      .map((b) => `<rect x="${b.x}" y="0" width="${b.width}" height="1" fill="#000"/>`)
+      .join("");
+    barsSvg = `<svg viewBox="0 0 ${symbol.width} 1" preserveAspectRatio="none" shape-rendering="crispEdges"><rect x="0" y="0" width="${symbol.width}" height="1" fill="#fff"/>${rects}</svg>`;
+  } catch {
+    barsSvg = "";
+  }
+
+  const html = `<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(code)}</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; color: #000; }
+  body { font-family: Tahoma, Arial, sans-serif; }
+  .wrap { width: 100%; container-type: inline-size; }
+  .sticker { width: 100%; padding: 2cqw 3cqw; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+  .name { font-size: 8cqw; font-weight: 700; line-height: 1.2; margin: 0 0 1.5cqw; overflow-wrap: anywhere; }
+  svg { display: block; width: 100%; height: 24cqw; }
+  .code { direction: ltr; font-family: "Courier New", monospace; font-weight: 700; font-size: 7cqw; letter-spacing: 0.2em; line-height: 1; margin-top: 1.5cqw; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="sticker">
+      <p class="name" dir="auto">${escapeHtml(name)}</p>
+      ${barsSvg}
+      <div class="code">${escapeHtml(code)}</div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+  document.body.appendChild(iframe);
+
+  const doc = iframe.contentDocument;
+  const win = iframe.contentWindow;
+  if (!doc || !win) {
+    iframe.remove();
+    return;
+  }
+
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  const cleanup = () => setTimeout(() => iframe.remove(), 1000);
+  win.addEventListener("afterprint", cleanup);
+
+  // Give the iframe a moment to lay out before opening the print dialog.
+  setTimeout(() => {
+    win.focus();
+    win.print();
+  }, 250);
+}
+
+/** Student barcode sticker (spec §6, §7): barcode + name + ID only. */
 export default function StudentCardPage() {
   const { t } = useI18n();
   const router = useRouter();
@@ -42,13 +118,17 @@ export default function StudentCardPage() {
 
   return (
     <div className="space-y-5">
-      <div className="no-print flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <PageHeader title={t("students.card")} />
         <div className="flex items-center gap-2">
           <button type="button" className="btn-secondary" onClick={() => router.push(`/dashboard/students/${student.id}`)}>
             {t("common.back")}
           </button>
-          <button type="button" className="btn-primary" onClick={() => window.print()}>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => printSticker(student.fullName, student.studentCode)}
+          >
             {t("common.print")}
           </button>
         </div>
@@ -56,12 +136,9 @@ export default function StudentCardPage() {
 
       <ErrorNotice message={error} />
 
-      {/* On screen: a preview card. In print: fills the whole page (see .student-sticker in globals.css). */}
-      <div className="student-sticker print-sheet card mx-auto flex w-full max-w-xs flex-col items-center justify-start gap-1 bg-white p-3 text-center text-black">
+      {/* On-screen preview only — printing uses the clean document built in printSticker(). */}
+      <div className="card mx-auto flex w-full max-w-xs flex-col items-center justify-center gap-1 bg-white p-3 text-center text-black">
         <p className="w-full break-words text-sm font-bold leading-tight">{student.fullName}</p>
-
-        {/* The exact value stored in Student.studentCode — what the attendance scanner looks up.
-            The digits printed under the bars are the student ID. */}
         <Barcode value={student.studentCode} invalidLabel={t("students.barcodeInvalid")} />
       </div>
     </div>
