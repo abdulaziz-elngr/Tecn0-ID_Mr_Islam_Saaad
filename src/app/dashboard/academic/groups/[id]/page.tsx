@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { apiDelete, apiPatch, apiPost, useApi } from "@/lib/client";
 import { Badge, ConfirmDialog, ErrorNotice, Field, Modal, PageHeader, useToast } from "@/components/ui";
+import { toCsv } from "@/lib/csv";
 
 interface StudentRow {
   id: string;
@@ -168,17 +169,29 @@ export default function GroupDetailPage() {
 
   function exportCsv() {
     if (!group) return;
-    const header = ["Student Code", "Name", "Status", "Phone", "Parent Name", "Parent Phone", "Enrollment Date"];
-    const rows = filteredStudents.map((s) => [
-      s.studentCode,
-      s.fullName,
-      s.status,
-      s.phone ?? "",
-      s.parents[0]?.parent.fullName ?? "",
-      s.parents[0]?.parent.phone ?? "",
-      s.enrollmentDate.slice(0, 10)
-    ]);
-    const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const STATUS_AR: Record<string, string> = {
+      ACTIVE: "نشط",
+      INACTIVE: "غير نشط",
+      SUSPENDED: "موقوف",
+      GRADUATED: "متخرج"
+    };
+    // Placeholder phones ("غير-محدد-...") and "+20" prefixes (which the CSV
+    // injection guard would turn into '+20) are cleaned for the export.
+    const cleanPhone = (p?: string | null) => {
+      if (!p || p.startsWith("غير-محدد")) return "";
+      return p.replace(/^\+20/, "0");
+    };
+    const columns = ["كود الطالب", "الاسم", "الحالة", "هاتف الطالب", "اسم ولي الأمر", "هاتف ولي الأمر", "تاريخ التسجيل"];
+    const rows = filteredStudents.map((s) => ({
+      "كود الطالب": s.studentCode,
+      "الاسم": s.fullName,
+      "الحالة": STATUS_AR[s.status] ?? s.status,
+      "هاتف الطالب": cleanPhone(s.phone),
+      "اسم ولي الأمر": s.parents[0]?.parent.fullName ?? "",
+      "هاتف ولي الأمر": cleanPhone(s.parents[0]?.parent.phone),
+      "تاريخ التسجيل": s.enrollmentDate.slice(0, 10)
+    }));
+    const csv = "\uFEFF" + toCsv(rows, columns); // BOM so Excel reads Arabic as UTF-8
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
