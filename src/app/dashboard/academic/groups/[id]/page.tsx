@@ -191,7 +191,9 @@ export default function GroupDetailPage() {
       "هاتف ولي الأمر": cleanPhone(s.parents[0]?.parent.phone),
       "تاريخ التسجيل": s.enrollmentDate.slice(0, 10)
     }));
-    const csv = "\uFEFF" + toCsv(rows, columns); // BOM so Excel reads Arabic as UTF-8
+    // BOM so Excel reads Arabic as UTF-8, and "sep=," so Excel splits columns even when
+    // the Windows list separator (Arabic/Egypt regional settings) is not a comma.
+    const csv = "\uFEFFsep=,\r\n" + toCsv(rows, columns);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
