@@ -55,22 +55,23 @@ body {
     color: #000000 !important;
   }
 
-  /* Student barcode sticker (spec §6): the page size and margins come from the
-     browser's print dialog (printer settings), NOT from the app. The sticker
-     simply fills whatever page the printer is set to. */
+  /* Student barcode sticker (spec §6): page size, orientation and margins come
+     from the browser's print dialog / printer settings, NOT from the app.
+     No fixed height and no forced @page rule, so nothing gets clipped. */
   .student-sticker {
-    width: 100vw !important;
-    height: 100vh !important;
+    width: 100% !important;
     max-width: none !important;
+    height: auto !important;
     margin: 0 !important;
-    padding: 1.5mm !important;
+    padding: 2mm !important;
     border: none !important;
     border-radius: 0 !important;
     box-shadow: none !important;
     background: #ffffff !important;
     color: #000000 !important;
-    overflow: hidden;
+    overflow: visible !important;
     break-inside: avoid;
+    page-break-inside: avoid;
     page-break-after: avoid;
   }
   html:has(.student-sticker),
@@ -78,6 +79,8 @@ body {
   html:has(.student-sticker) main {
     margin: 0 !important;
     padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
     background: #ffffff !important;
   }
 
