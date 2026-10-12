@@ -195,6 +195,8 @@ export function LessonReportView({
 
   return (
     <div className="print-report space-y-5">
+      {/* A4 page setup applies to the lesson report only (kept out of globals.css so it can't affect other printouts). */}
+      <style>{`@media print { @page { size: A4; margin: 12mm; } }`}</style>
       {/* ---- Print-only letterhead ---- */}
       <div className="hidden print:block">
         <div className="border-b border-black pb-2 text-center">
