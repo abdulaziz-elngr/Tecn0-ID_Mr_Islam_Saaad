@@ -55,20 +55,30 @@ body {
     color: #000000 !important;
   }
 
-  /* Thermal sticker layout for student barcode cards (spec §6).
-     Two configurable sizes — switch with the print-size-* class on
-     .print-sheet from the print settings on the Student Card page. */
-  .print-size-40x30 {
-    width: 40mm !important;
-    max-width: 40mm !important;
+  /* Student barcode sticker (spec §6): the page size and margins come from the
+     browser's print dialog (printer settings), NOT from the app. The sticker
+     simply fills whatever page the printer is set to. */
+  .student-sticker {
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 1.5mm !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    overflow: hidden;
+    break-inside: avoid;
+    page-break-after: avoid;
   }
-  .print-size-58x40 {
-    width: 58mm !important;
-    max-width: 58mm !important;
-  }
-  @page {
-    size: auto;
-    margin: 2mm;
+  html:has(.student-sticker),
+  html:has(.student-sticker) body,
+  html:has(.student-sticker) main {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
   }
 
   /* Thermal receipt layout (spec §19) — narrow roll width. */
@@ -81,10 +91,6 @@ body {
 /* Lesson report (Stage 2): readable black-on-white paper output even when the
    app is in dark mode. Scoped to .print-report so nothing else is affected. */
 @media print {
-  @page {
-    size: A4;
-    margin: 12mm;
-  }
   .print-report,
   .print-report * {
     color: #000 !important;
