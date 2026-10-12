@@ -14,6 +14,14 @@ interface ProfileData {
   };
 }
 
+/**
+ * Barcode sticker printing (spec §6, §7).
+ *
+ * The sticker contains only: barcode, student name, student ID.
+ * Paper size and margins are controlled entirely from the browser's print
+ * dialog / printer settings — the app does not force any size. The sticker
+ * stretches to fill whatever page size the printer is set to.
+ */
 export default function StudentCardPage() {
   const { t } = useI18n();
   const router = useRouter();
@@ -34,8 +42,6 @@ export default function StudentCardPage() {
 
   return (
     <div className="space-y-5">
-      <style>{`@media print { @page { size: auto; margin: 0; } }`}</style>
-
       <div className="no-print flex flex-wrap items-center justify-between gap-3">
         <PageHeader title={t("students.card")} />
         <div className="flex items-center gap-2">
@@ -50,8 +56,12 @@ export default function StudentCardPage() {
 
       <ErrorNotice message={error} />
 
-      <div className="student-sticker print-sheet card mx-auto flex w-full max-w-xs flex-col items-center justify-center gap-1 bg-white p-3 text-center text-black">
+      {/* On screen: a preview card. In print: fills the whole page (see .student-sticker in globals.css). */}
+      <div className="student-sticker print-sheet card mx-auto flex w-full max-w-xs flex-col items-center justify-start gap-1 bg-white p-3 text-center text-black">
         <p className="w-full break-words text-sm font-bold leading-tight">{student.fullName}</p>
+
+        {/* The exact value stored in Student.studentCode — what the attendance scanner looks up.
+            The digits printed under the bars are the student ID. */}
         <Barcode value={student.studentCode} invalidLabel={t("students.barcodeInvalid")} />
       </div>
     </div>
