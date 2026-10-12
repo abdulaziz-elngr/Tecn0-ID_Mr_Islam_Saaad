@@ -73,7 +73,8 @@ function printSticker(name: string, code: string) {
 
   const iframe = document.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");
-  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+  // Real size (off-screen) so width-relative units (cqw) resolve correctly while printing.
+  iframe.style.cssText = "position:fixed;left:-10000px;top:0;width:800px;height:600px;border:0;";
   document.body.appendChild(iframe);
 
   const doc = iframe.contentDocument;
