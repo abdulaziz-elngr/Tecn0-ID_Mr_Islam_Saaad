@@ -6,7 +6,6 @@ import { useParams, useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { apiDelete, apiPatch, apiPost, useApi } from "@/lib/client";
 import { Badge, ConfirmDialog, ErrorNotice, Field, Modal, PageHeader, useToast } from "@/components/ui";
-import { toCsv } from "@/lib/csv";
 
 interface StudentRow {
   id: string;
@@ -167,7 +166,7 @@ export default function GroupDetailPage() {
     }
   }
 
-  function exportCsv() {
+  async function exportXlsx() {
     if (!group) return;
     const STATUS_AR: Record<string, string> = {
       ACTIVE: "نشط",
@@ -175,30 +174,51 @@ export default function GroupDetailPage() {
       SUSPENDED: "موقوف",
       GRADUATED: "متخرج"
     };
-    // Placeholder phones ("غير-محدد-...") and "+20" prefixes (which the CSV
-    // injection guard would turn into '+20) are cleaned for the export.
-    const cleanPhone = (p?: string | null) => {
-      if (!p || p.startsWith("غير-محدد")) return "";
-      return p.replace(/^\+20/, "0");
-    };
-    const columns = ["كود الطالب", "الاسم", "الحالة", "هاتف الطالب", "اسم ولي الأمر", "هاتف ولي الأمر", "تاريخ التسجيل"];
-    const rows = filteredStudents.map((s) => ({
-      "كود الطالب": s.studentCode,
-      "الاسم": s.fullName,
-      "الحالة": STATUS_AR[s.status] ?? s.status,
-      "هاتف الطالب": cleanPhone(s.phone),
-      "اسم ولي الأمر": s.parents[0]?.parent.fullName ?? "",
-      "هاتف ولي الأمر": cleanPhone(s.parents[0]?.parent.phone),
-      "تاريخ التسجيل": s.enrollmentDate.slice(0, 10)
-    }));
-    // BOM so Excel reads Arabic as UTF-8, and "sep=," so Excel splits columns even when
-    // the Windows list separator (Arabic/Egypt regional settings) is not a comma.
-    const csv = "\uFEFFsep=,\r\n" + toCsv(rows, columns);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    // Placeholder phones ("غير-محدد-...") are not real numbers, so leave them empty.
+    const cleanPhone = (p?: string | null) => (!p || p.startsWith("غير-محدد") ? "" : p);
+
+    const ExcelJS = (await import("exceljs")).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("الطلاب", { views: [{ rightToLeft: true, state: "frozen", ySplit: 1 }] });
+    ws.columns = [
+      { header: "كود الطالب", key: "code", width: 14 },
+      { header: "الاسم", key: "name", width: 32 },
+      { header: "الحالة", key: "status", width: 12 },
+      { header: "هاتف الطالب", key: "phone", width: 16 },
+      { header: "اسم ولي الأمر", key: "parent", width: 28 },
+      { header: "هاتف ولي الأمر", key: "parentPhone", width: 16 },
+      { header: "تاريخ التسجيل", key: "date", width: 16 }
+    ];
+    for (const s of filteredStudents) {
+      ws.addRow({
+        code: s.studentCode,
+        name: s.fullName,
+        status: STATUS_AR[s.status] ?? s.status,
+        phone: cleanPhone(s.phone),
+        parent: s.parents[0]?.parent.fullName ?? "",
+        parentPhone: cleanPhone(s.parents[0]?.parent.phone),
+        date: s.enrollmentDate.slice(0, 10)
+      });
+    }
+    const header = ws.getRow(1);
+    header.font = { bold: true };
+    header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8E8E8" } };
+    ws.eachRow((row) => {
+      row.alignment = { horizontal: "right", vertical: "middle" };
+    });
+    // Phones and codes as text so Excel keeps the leading zero.
+    ["A", "D", "F"].forEach((col) => {
+      ws.getColumn(col).numFmt = "@";
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${group.name}-students.csv`;
+    a.download = `${group.name}-students.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -327,7 +347,7 @@ export default function GroupDetailPage() {
           <Link href={`/dashboard/students?groupId=${group.id}`} className="btn-primary">
             {t("students.add")}
           </Link>
-          <button type="button" className="btn-secondary" onClick={exportCsv}>
+          <button type="button" className="btn-secondary" onClick={exportXlsx}>
             Export
           </button>
         </div>
