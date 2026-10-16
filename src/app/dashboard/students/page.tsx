@@ -178,7 +178,8 @@ function StudentsPage() {
       .then(async (r) => {
         if (!r.ok) {
           const body = await r.json().catch(() => ({}));
-          throw new Error(body.error ?? "Failed to load students.");
+          const ref = typeof body.errorId === "string" ? ` (ref ${body.errorId.slice(0, 8)})` : "";
+          throw new Error((body.error ?? "Failed to load students.") + ref);
         }
         return r.json();
       })

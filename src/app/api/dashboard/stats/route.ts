@@ -8,6 +8,9 @@ import { round2 } from "@/lib/billing";
 import { loadLedgerEnv, loadLedgers } from "@/lib/payment-ledger";
 import { outstandingMonths } from "@/lib/subscription-months";
 
+/** These routes build a ledger for every student; give them room on serverless. */
+export const maxDuration = 30;
+
 /**
  * Dashboard statistics (spec §8).
  *

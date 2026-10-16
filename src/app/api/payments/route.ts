@@ -1,172 +1,201 @@
 import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission } from "@/lib/rbac";
-import { handleApiError, ok, readJson, NotFoundError, BusinessRuleError } from "@/lib/api";
+import { requirePermission, resolveBranchScope } from "@/lib/rbac";
+import {
+  handleApiError,
+  ok,
+  created,
+  readJson,
+  readQuery,
+  paginationSchema,
+  BusinessRuleError
+} from "@/lib/api";
 import { writeAuditLog } from "@/lib/audit";
-import { computeSubscriptionStatus, round2 } from "@/lib/billing";
-import { getCenterProfile } from "@/lib/settings";
+import {
+  allocatePayment,
+  computeSubscriptionStatus,
+  nextInvoiceNumber,
+  nextReceiptNumber,
+  remainingAmount,
+  round2
+} from "@/lib/billing";
+import { dispatchEvent } from "@/lib/notifications";
 
-/**
- * Financial correction workflows (spec §30, Rule 6).
- *
- * There is NO DELETE here on purpose. A payment can only be:
- *   VOID   — the whole payment was a mistake (wrong student, wrong day)
- *   REFUND — money was genuinely returned, fully or partially
- * Both require a reason, both reverse the subscription balances inside
- * the same transaction, and both are audited.
- */
+const listSchema = paginationSchema.extend({
+  branchId: z.string().uuid().optional(),
+  studentId: z.string().uuid().optional(),
+  method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]).optional(),
+  status: z.enum(["COMPLETED", "VOIDED", "REFUNDED", "PARTIALLY_REFUNDED"]).optional(),
+  from: z.string().date().optional(),
+  to: z.string().date().optional()
+});
 
-const actionSchema = z.discriminatedUnion("action", [
-  z.object({
-    action: z.literal("VOID"),
-    reason: z.string().trim().min(3).max(500)
-  }),
-  z.object({
-    action: z.literal("REFUND"),
-    amount: z.number().positive().max(1000000),
-    reason: z.string().trim().min(3).max(500)
-  })
-]);
+const createSchema = z.object({
+  studentId: z.string().uuid(),
+  amount: z.number().positive().max(1000000),
+  method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]),
+  paidAt: z.string().datetime().optional(),
+  notes: z.string().trim().max(500).optional(),
+  /** Explicit targets; when omitted the payment is spread oldest-first. */
+  subscriptionIds: z.array(z.string().uuid()).max(24).optional()
+});
 
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest) {
   try {
     const ctx = await requirePermission("payments.view");
-    const payment = await db.payment.findFirst({
-      where: {
-        id: params.id,
-        organizationId: ctx.organizationId,
-        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
-      },
-      include: {
-        student: {
-          select: {
-            id: true,
-            fullName: true,
-            studentCode: true,
-            stage: { select: { name: true } },
-            grade: { select: { name: true } },
-            group: { select: { name: true } }
-          }
-        },
-        invoice: true,
-        allocations: {
-          include: {
-            subscription: {
-              select: { id: true, periodYear: true, periodMonth: true, amount: true }
+    const query = readQuery(request, listSchema);
+    const branchIds = resolveBranchScope(ctx, query.branchId);
+
+    const where = {
+      organizationId: ctx.organizationId,
+      ...(branchIds ? { branchId: { in: branchIds } } : {}),
+      ...(query.studentId ? { studentId: query.studentId } : {}),
+      ...(query.method ? { method: query.method } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.from || query.to
+        ? {
+            paidAt: {
+              ...(query.from ? { gte: new Date(query.from) } : {}),
+              ...(query.to ? { lte: new Date(`${query.to}T23:59:59.999Z`) } : {})
             }
           }
-        }
-      }
-    });
-    if (!payment) throw new NotFoundError("Payment not found.");
+        : {})
+    };
 
-    const [cashier, refunder, center] = await Promise.all([
-      payment.recordedById
-        ? db.user.findUnique({ where: { id: payment.recordedById }, select: { fullName: true } })
-        : null,
-      payment.refundedById
-        ? db.user.findUnique({ where: { id: payment.refundedById }, select: { fullName: true } })
-        : null,
-      getCenterProfile(ctx.organizationId)
+    const [total, rows, sum] = await Promise.all([
+      db.payment.count({ where }),
+      db.payment.findMany({
+        where,
+        orderBy: { paidAt: "desc" },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        include: {
+          student: { select: { id: true, fullName: true, studentCode: true } },
+          invoice: { select: { id: true, invoiceNumber: true, status: true } }
+        }
+      }),
+      db.payment.aggregate({
+        where: { ...where, status: { in: ["COMPLETED", "PARTIALLY_REFUNDED"] } },
+        _sum: { amount: true, refundedAmount: true }
+      })
     ]);
 
     return ok({
-      ...payment,
-      cashierName: cashier?.fullName ?? null,
-      refundedByName: refunder?.fullName ?? null,
-      center: {
-        name: center.name,
-        logoUrl: center.logoUrl,
-        address: center.address,
-        phone: center.phone,
-        currency: center.currency
-      },
-      amount: Number(payment.amount),
-      refundedAmount: Number(payment.refundedAmount),
-      allocations: payment.allocations.map((a) => ({
-        id: a.id,
-        amount: Number(a.amount),
-        subscription: {
-          ...a.subscription,
-          amount: Number(a.subscription.amount)
-        }
+      payments: rows.map((p) => ({
+        id: p.id,
+        receiptNumber: p.receiptNumber,
+        student: p.student,
+        amount: Number(p.amount),
+        refundedAmount: Number(p.refundedAmount),
+        method: p.method,
+        status: p.status,
+        paidAt: p.paidAt,
+        notes: p.notes,
+        invoice: p.invoice
       })),
-      invoice: payment.invoice
-        ? {
-            ...payment.invoice,
-            totalAmount: Number(payment.invoice.totalAmount),
-            paidAmount: Number(payment.invoice.paidAmount),
-            remainingAmount: Number(payment.invoice.remainingAmount)
-          }
-        : null
+      totals: {
+        collected: round2(
+          Number(sum._sum.amount ?? 0) - Number(sum._sum.refundedAmount ?? 0)
+        )
+      },
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / query.pageSize))
+      }
     });
   } catch (err) {
-    return handleApiError("payments.get", err);
+    return handleApiError("payments.list", err);
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+/**
+ * Records a payment. Everything — the payment row, its allocations, the
+ * updated subscription balances and the invoice — happens inside ONE
+ * transaction, so a crash can never leave a receipt without an invoice
+ * or a subscription marked paid without money behind it.
+ */
+export async function POST(request: NextRequest) {
   try {
-    const input = await readJson(request, actionSchema);
-    const ctx = await requirePermission(
-      input.action === "VOID" ? "payments.void" : "payments.refund"
-    );
+    const ctx = await requirePermission("payments.create");
+    const input = await readJson(request, createSchema);
 
-    const payment = await db.payment.findFirst({
-      where: {
-        id: params.id,
-        organizationId: ctx.organizationId,
-        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
-      },
-      include: { allocations: true, invoice: true }
+    const student = await db.student.findFirst({
+      where: { id: input.studentId, organizationId: ctx.organizationId, deletedAt: null },
+      select: { id: true, fullName: true, branchId: true }
     });
-    if (!payment) throw new NotFoundError("Payment not found.");
-    if (payment.status === "VOIDED") {
-      throw new BusinessRuleError("This payment has already been voided.", { status: 409, code: "ALREADY_VOIDED" });
-    }
-    if (payment.status === "REFUNDED") {
-      throw new BusinessRuleError("This payment has already been fully refunded.", { status: 409, code: "ALREADY_REFUNDED" });
-    }
+    if (!student) throw new BusinessRuleError("Student not found.", { status: 404 });
+    resolveBranchScope(ctx, student.branchId);
 
-    const amount = Number(payment.amount);
-    const alreadyRefunded = Number(payment.refundedAmount);
+    const outstanding = await db.subscription.findMany({
+      where: {
+        studentId: student.id,
+        organizationId: ctx.organizationId,
+        status: { in: ["UNPAID", "PARTIAL", "OVERDUE"] },
+        ...(input.subscriptionIds ? { id: { in: input.subscriptionIds } } : {})
+      },
+      orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }]
+    });
 
-    if (input.action === "REFUND") {
-      const maxRefundable = round2(amount - alreadyRefunded);
-      if (input.amount > maxRefundable) {
-        throw new BusinessRuleError(
-          `The refund cannot exceed the remaining refundable amount (${maxRefundable}).`
-        );
-      }
-    }
-
-    const reversalTotal =
-      input.action === "VOID" ? round2(amount - alreadyRefunded) : round2(input.amount);
-
-    const updated = await db.$transaction(async (tx) => {
-      // Optimistic guard: if another cashier refunded/voided this payment after we
-      // read it, nothing matches and we abort, so the same money can never be
-      // refunded twice.
-      const guard = await tx.payment.updateMany({
-        where: { id: payment.id, status: payment.status, refundedAmount: payment.refundedAmount },
-        data: { updatedAt: new Date() }
+    // Oldest-month-first: an explicit selection must be a prefix of everything
+    // still owing (no skipping an earlier unpaid month).
+    if (input.subscriptionIds) {
+      const allOwing = await db.subscription.findMany({
+        where: {
+          studentId: student.id,
+          organizationId: ctx.organizationId,
+          status: { in: ["UNPAID", "PARTIAL", "OVERDUE"] }
+        },
+        orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }],
+        select: { id: true }
       });
-      if (guard.count !== 1) {
-        throw new BusinessRuleError("This payment was just changed by someone else. Reload and try again.", { status: 409, code: "CONCURRENT_CHANGE" });
+      const chosen = new Set(input.subscriptionIds);
+      const prefixLength = allOwing.findIndex((r) => !chosen.has(r.id));
+      const firstSkipped = prefixLength === -1 ? allOwing.length : prefixLength;
+      if (allOwing.slice(firstSkipped).some((r) => chosen.has(r.id))) {
+        throw new BusinessRuleError("A previous month is still unpaid.", { status: 409, code: "OUT_OF_ORDER" });
       }
+    }
 
-      // Reverse allocations proportionally, newest subscription first.
-      let left = reversalTotal;
-      for (const allocation of [...payment.allocations].reverse()) {
-        if (left <= 0) break;
-        const take = round2(Math.min(left, Number(allocation.amount)));
-        const subscription = await tx.subscription.findUnique({
-          where: { id: allocation.subscriptionId }
+    const targets = outstanding.map((s) => ({
+      subscriptionId: s.id,
+      remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
+    }));
+
+    const { allocations, unallocated } = allocatePayment(input.amount, targets);
+
+    const receiptNumber = await nextReceiptNumber(ctx.organizationId);
+    const invoiceNumber = await nextInvoiceNumber(ctx.organizationId);
+    const paidAt = input.paidAt ? new Date(input.paidAt) : new Date();
+
+    const result = await db.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          organizationId: ctx.organizationId,
+          branchId: student.branchId,
+          studentId: student.id,
+          amount: input.amount,
+          method: input.method,
+          receiptNumber,
+          paidAt,
+          notes: input.notes,
+          recordedById: ctx.userId
+        }
+      });
+
+      for (const allocation of allocations) {
+        await tx.paymentAllocation.create({
+          data: {
+            paymentId: payment.id,
+            subscriptionId: allocation.subscriptionId,
+            amount: allocation.amount
+          }
         });
-        if (!subscription) continue;
 
-        const newPaid = round2(Math.max(0, Number(subscription.paidAmount) - take));
+        const subscription = outstanding.find((s) => s.id === allocation.subscriptionId)!;
+        const newPaid = round2(Number(subscription.paidAmount) + allocation.amount);
         await tx.subscription.update({
           where: { id: subscription.id },
           data: {
@@ -180,65 +209,62 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
             })
           }
         });
-        left = round2(left - take);
       }
 
-      const nextRefunded =
-        input.action === "VOID" ? amount : round2(alreadyRefunded + input.amount);
-      const nextStatus =
-        input.action === "VOID"
-          ? "VOIDED"
-          : nextRefunded >= amount
-            ? "REFUNDED"
-            : "PARTIALLY_REFUNDED";
-
-      const next = await tx.payment.update({
-        where: { id: payment.id },
+      const allocated = round2(input.amount - unallocated);
+      const invoice = await tx.invoice.create({
         data: {
-          status: nextStatus,
-          refundedAmount: nextRefunded,
-          voidedById: input.action === "VOID" ? ctx.userId : payment.voidedById,
-          voidedAt: input.action === "VOID" ? new Date() : payment.voidedAt,
-          voidReason: input.action === "VOID" ? input.reason : payment.voidReason,
-          ...(input.action === "REFUND"
-            ? { refundedById: ctx.userId, refundedAt: new Date(), refundReason: input.reason }
-            : {})
+          organizationId: ctx.organizationId,
+          invoiceNumber,
+          paymentId: payment.id,
+          studentId: student.id,
+          totalAmount: input.amount,
+          paidAmount: input.amount,
+          remainingAmount: 0,
+          description:
+            allocations.length > 0
+              ? `Tuition payment applied to ${allocations.length} subscription(s).`
+              : "Payment recorded as an unallocated credit."
         }
       });
 
-      if (payment.invoice) {
-        await tx.invoice.update({
-          where: { id: payment.invoice.id },
-          data:
-            input.action === "VOID"
-              ? { status: "VOID", voidReason: input.reason, paidAmount: 0, remainingAmount: amount }
-              : {
-                  paidAmount: round2(amount - nextRefunded),
-                  remainingAmount: nextRefunded
-                }
-        });
-      }
-
-      return next;
+      return { payment, invoice, allocated, unallocated };
     });
 
     await writeAuditLog({
       organizationId: ctx.organizationId,
       actorUserId: ctx.userId,
-      action: input.action === "VOID" ? "VOID_PAYMENT" : "REFUND_PAYMENT",
+      action: "CREATE_PAYMENT",
       entityType: "Payment",
-      entityId: payment.id,
-      beforeValue: { status: payment.status, refundedAmount: alreadyRefunded, amount },
-      afterValue: { status: updated.status, refundedAmount: Number(updated.refundedAmount) },
-      reason: input.reason
+      entityId: result.payment.id,
+      afterValue: {
+        amount: input.amount,
+        method: input.method,
+        receiptNumber,
+        allocations
+      }
     });
 
-    return ok({
-      id: updated.id,
-      status: updated.status,
-      refundedAmount: Number(updated.refundedAmount)
+    await dispatchEvent({
+      organizationId: ctx.organizationId,
+      event: "PAYMENT_RECEIVED",
+      studentId: student.id,
+      title: "Payment received",
+      actorUserId: ctx.userId,
+      variables: {
+        student_name: student.fullName,
+        amount: input.amount,
+        receipt_number: receiptNumber
+      }
+    }).catch((err) => console.error("[payments.create] notify failed", err));
+
+    return created({
+      payment: { ...result.payment, amount: Number(result.payment.amount) },
+      invoice: { id: result.invoice.id, invoiceNumber: result.invoice.invoiceNumber },
+      allocatedAmount: result.allocated,
+      unallocatedCredit: result.unallocated
     });
   } catch (err) {
-    return handleApiError("payments.adjust", err);
+    return handleApiError("payments.create", err);
   }
 }
