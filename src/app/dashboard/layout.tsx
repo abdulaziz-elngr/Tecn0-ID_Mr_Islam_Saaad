@@ -3,9 +3,11 @@ import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { OverdueNotices } from "@/components/payments/OverdueNotices";
 import { TableCards } from "@/components/TableCards";
+import { PermissionsProvider } from "@/components/PermissionsProvider";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
+    <PermissionsProvider>
     <div className="flex min-h-screen bg-surface-light-muted dark:bg-surface-dark">
       <TableCards />
       <Sidebar />
@@ -19,5 +21,6 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         </main>
       </div>
     </div>
+    </PermissionsProvider>
   );
 }

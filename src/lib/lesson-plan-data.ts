@@ -1,3 +1,4 @@
+import { groupIdFilter, resolveOwnGroupIds } from "./group-access";
 import type { DayOfWeek, Prisma } from "@prisma/client";
 import { db } from "./db";
 import { BusinessRuleError, NotFoundError } from "./api";
@@ -319,6 +320,7 @@ export async function listPlans(
   }
 ): Promise<ListedPlan[]> {
   const branchIds = resolveBranchScope(ctx, filter.branchId);
+  const ownGroupIds = await resolveOwnGroupIds(ctx);
 
   const groupWhere: Prisma.GroupWhereInput = {
     ...(filter.gradeId ? { gradeId: filter.gradeId } : {}),
@@ -330,7 +332,7 @@ export async function listPlans(
     where: {
       organizationId: ctx.organizationId,
       ...(branchIds ? { branchId: { in: branchIds } } : {}),
-      ...(filter.groupId ? { groupId: filter.groupId } : {}),
+      ...groupIdFilter(ownGroupIds, filter.groupId),
       ...(filter.year ? { year: filter.year } : {}),
       ...(filter.month ? { month: filter.month } : {}),
       ...(Object.keys(groupWhere).length ? { group: groupWhere } : {})

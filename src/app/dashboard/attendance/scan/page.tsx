@@ -6,6 +6,7 @@ import { hasDictKey, useI18n } from "@/lib/i18n";
 import { apiPost, currentMonth, formatDateTime, qs, useApi } from "@/lib/client";
 import { fmt, formatLessonDate, formatTimeRange, localizeError, monthLabel, parseMonthInput, weekdayLabel } from "@/lib/lesson-format";
 import { currentLesson, nextLesson } from "@/lib/lesson-flow";
+import { MonthYearPicker } from "@/components/MonthYearPicker";
 import { Badge, ConfirmDialog, ErrorNotice, Field, PageHeader, useToast } from "@/components/ui";
 import { GroupPicker } from "@/components/GroupPicker";
 import { CameraScanner } from "@/components/CameraScanner";
@@ -288,13 +289,11 @@ export default function ScannerPage() {
         <div className="max-w-xs">
           <Field label={t("lf.month")} required>
             {(id) => (
-              <input
+              <MonthYearPicker
                 id={id}
-                type="month"
-                className="input"
                 value={monthValue}
-                onChange={(e) => {
-                  setMonthValue(e.target.value);
+                onChange={(v) => {
+                  setMonthValue(v);
                   setSessionId("");
                 }}
               />

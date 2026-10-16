@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission } from "@/lib/rbac";
+import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { handleApiError, ok, NotFoundError } from "@/lib/api";
 import { attendanceRate } from "@/lib/attendance";
 import { computeExamStatistics, percentage } from "@/lib/grading";
@@ -21,12 +22,14 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     const ctx = await requirePermission("students.view");
     const canSeeFinance = ctx.permissions.has("payments.view");
 
+    const ownGroupIds = await resolveOwnGroupIds(ctx);
     const student = await db.student.findFirst({
       where: {
         id: params.id,
         organizationId: ctx.organizationId,
         deletedAt: null,
-        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
+        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } }),
+        ...groupIdFilter(ownGroupIds)
       },
       include: {
         branch: { select: { id: true, name: true } },

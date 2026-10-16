@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, resolveBranchScope } from "@/lib/rbac";
+import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { handleApiError, ok, readJson, clientIp, userAgent, BusinessRuleError } from "@/lib/api";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { evaluateAttendance, normalizeScanInput, type AttendanceFacts } from "@/lib/attendance";
@@ -55,11 +56,13 @@ export async function POST(request: NextRequest) {
     const input = await readJson(request, scanSchema);
     const code = normalizeScanInput(input.code);
 
+    const ownGroupIds = await resolveOwnGroupIds(ctx);
     const session = await db.classSession.findFirst({
       where: {
         id: input.sessionId,
         organizationId: ctx.organizationId,
-        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
+        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } }),
+        ...groupIdFilter(ownGroupIds)
       },
       include: {
         group: {

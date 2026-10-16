@@ -44,6 +44,43 @@ export function ownGroupFilter(teacherId: string | null | undefined) {
   return { OR: [{ teacherId }, { assistantId: teacherId }] };
 }
 
+/**
+ * Ids of the groups the caller is responsible for.
+ *   undefined → not restricted (owner, manager, accountant… — whatever their branch scope allows)
+ *   string[]  → restricted to exactly these groups ([] = a teaching login with no groups sees nothing)
+ */
+export async function resolveOwnGroupIds(ctx: AuthContext): Promise<string[] | undefined> {
+  const teacherId = await resolveOwnTeacherId(ctx);
+  if (teacherId === undefined) return undefined;
+  if (teacherId === null) return [];
+  const rows = await db.group.findMany({
+    where: { deletedAt: null, OR: [{ teacherId }, { assistantId: teacherId }] },
+    select: { id: true }
+  });
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Prisma fragment for a `groupId` column: intersects an optional requested
+ * group with the caller's own groups. Spread it into a `where`.
+ */
+export function groupIdFilter(
+  ownIds: string[] | undefined,
+  requested?: string | null
+): { groupId?: string | { in: string[] } } {
+  if (!ownIds) return requested ? { groupId: requested } : {};
+  if (requested) return ownIds.includes(requested) ? { groupId: requested } : { groupId: { in: [] } };
+  return { groupId: { in: ownIds } };
+}
+
+/** Throws Forbidden when a restricted caller touches a group that is not theirs. */
+export function assertGroupInScope(ownIds: string[] | undefined, groupId: string | null | undefined): void {
+  if (!ownIds) return;
+  if (!groupId || !ownIds.includes(groupId)) {
+    throw new ForbiddenError("You can only access the groups you are responsible for.");
+  }
+}
+
 export function assertOwnGroup(
   teacherId: string | null | undefined,
   group: { teacherId: string | null; assistantId: string | null }

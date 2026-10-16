@@ -7,9 +7,9 @@
 | `SUPER_ADMIN` | All organizations (platform operator) | Full access |
 | `CENTER_OWNER` | Org-wide within their organization | Full access within org |
 | `MANAGER` | Org-wide within their organization | Operational management, no `users.manage`/`roles.manage` |
-| `ACCOUNTANT` | Branch-scoped | Payments, expenses, read-only students |
+| `ACCOUNTANT` | Branch-scoped (assign every branch) | Subscriptions, payments, invoices and financial reports ONLY — no students/academic/attendance pages |
 | `TEACHER` | Branch-scoped | Own groups: students, attendance, exams/grades |
-| `TEACHER_ASSISTANT` | Branch-scoped | Attendance + student lookup only |
+| `TEACHER_ASSISTANT` | Branch-scoped + own groups only | Attendance, recitation, homework, exams/grades, student performance of the groups he is responsible for. Never finance, users or settings |
 | `RECEPTIONIST` | Branch-scoped | Student/parent intake |
 | `ATTENDANCE_OPERATOR` | Branch-scoped | QR scanning station |
 | `PARENT` | Own linked children only | No permission keys — access is enforced via a separate parent-portal scope, added in a later phase |
@@ -50,3 +50,26 @@ scoping. This is intentionally not implemented as a permission key —
 it's enforced by looking up the caller's linked `Student`/`Parent`
 record and filtering queries to it directly, the same server-derived
 pattern used for `organizationId`/`branchId` elsewhere.
+
+## The three-role setup
+
+| Who | Role | What they see |
+|---|---|---|
+| Center owner | `CENTER_OWNER` | Everything |
+| Accountant | `ACCOUNTANT` | Subscriptions + payments (all students, stages, groups) |
+| Teaching assistant | `TEACHER_ASSISTANT` | His own group(s): attendance, recitation, homework, exams, performance |
+
+* **Own-group restriction** — `src/lib/group-access.ts` (`resolveOwnGroupIds`,
+  `groupIdFilter`) is applied on the server to attendance, lessons, students,
+  groups, stages, search and dashboard numbers, besides the exams / recitation /
+  homework / performance routes that already used it. A login is tied to its
+  groups through its Teacher/Assistant profile (`Teacher.userId`; groups are
+  `Group.assistantId`).
+* **Create the login** — Users → add user → role `TEACHER_ASSISTANT` → pick the
+  *Teacher / Assistant profile* and a branch. A teaching login without a profile
+  sees nothing (fail closed).
+* **Menu / page guard** — `src/lib/nav-access.ts` hides pages a user has no
+  permission for and redirects typed URLs to the dashboard. The API still
+  enforces every permission.
+* **Existing databases** — run `prisma/sql/2026-10-three-role-system.sql` once to
+  align the permission keys of the two roles.

@@ -2,6 +2,7 @@ import { db } from "./db";
 import { BusinessRuleError, NotFoundError } from "./api";
 import { writeAuditLog } from "./audit";
 import { resolveBranchScope, type AuthContext } from "./rbac";
+import { groupIdFilter, resolveOwnGroupIds } from "./group-access";
 import { getAnalyticsThresholds } from "./settings";
 import { countTrailingAbsences } from "./analytics";
 import { canCloseLesson, canOpenLesson, lateMinutes, nextLesson, type LessonStatus } from "./lesson-flow";
@@ -44,11 +45,13 @@ export async function getCenterTimeZone(branchId: string): Promise<string> {
 
 /** Loads a session inside the caller's organization/branch scope, or throws NotFoundError. */
 export async function findScopedSession(ctx: AuthContext, id: string) {
+  const ownGroupIds = await resolveOwnGroupIds(ctx);
   const session = await db.classSession.findFirst({
     where: {
       id,
       organizationId: ctx.organizationId,
-      ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
+      ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } }),
+      ...groupIdFilter(ownGroupIds)
     }
   });
   if (!session) throw new NotFoundError("Lesson not found.");

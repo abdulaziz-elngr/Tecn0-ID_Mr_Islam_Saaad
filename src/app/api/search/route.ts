@@ -1,3 +1,4 @@
+import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -31,6 +32,7 @@ export async function GET(request: NextRequest) {
 
     const query = readQuery(request, querySchema);
     const branchIds = resolveBranchScope(ctx, query.branchId);
+    const ownGroupIds = await resolveOwnGroupIds(ctx);
     const term = query.q;
     const insensitive = { contains: term, mode: "insensitive" as const };
 
@@ -41,6 +43,7 @@ export async function GET(request: NextRequest) {
               organizationId: ctx.organizationId,
               deletedAt: null,
               ...(branchIds ? { branchId: { in: branchIds } } : {}),
+              ...groupIdFilter(ownGroupIds),
               OR: [
                 { fullName: insensitive },
                 { studentCode: insensitive },
@@ -79,6 +82,7 @@ export async function GET(request: NextRequest) {
               deletedAt: null,
               branch: { center: { organizationId: ctx.organizationId } },
               ...(branchIds ? { branchId: { in: branchIds } } : {}),
+              ...(ownGroupIds ? { id: { in: ownGroupIds } } : {}),
               name: insensitive
             },
             take: query.limit,

@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, resolveBranchScope, ForbiddenError, UnauthorizedError } from "@/lib/rbac";
+import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { generateStudentCode, isStudentCodeConflict } from "@/lib/student-code";
 import { writeAuditLog } from "@/lib/audit";
 import {
@@ -80,6 +81,7 @@ export async function GET(request: NextRequest) {
     const { page, pageSize, search, branchId, stageId, gradeId, groupId, status } = parsed.data;
 
     const branchIds = resolveBranchScope(ctx, branchId);
+    const ownGroupIds = await resolveOwnGroupIds(ctx);
 
     const where = {
       organizationId: ctx.organizationId,
@@ -88,7 +90,7 @@ export async function GET(request: NextRequest) {
       ...(status ? { status } : {}),
       ...(stageId ? { stageId } : {}),
       ...(gradeId ? { gradeId } : {}),
-      ...(groupId ? { groupId } : {}),
+      ...groupIdFilter(ownGroupIds, groupId),
       ...(search
         ? {
             OR: [

@@ -13,6 +13,7 @@ import { writeAuditLog } from "@/lib/audit";
 import { isAssignableTeacher } from "@/lib/scope";
 import { countGroupDependencies, describeGroupBlockers, evaluateGroupDeletion } from "@/lib/group-safety";
 import { linkTeacherToSubject } from "@/lib/teacher-subjects";
+import { assertGroupInScope, resolveOwnGroupIds } from "@/lib/group-access";
 
 const SCOPE = "groups.detail";
 
@@ -43,6 +44,8 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       throw new ForbiddenError();
     }
 
+    const ownGroupIds = await resolveOwnGroupIds(ctx);
+    assertGroupInScope(ownGroupIds, params.id);
     const group = await db.group.findFirst({
       where: {
         id: params.id,

@@ -6,6 +6,7 @@ import { writeAuditLog } from "@/lib/audit";
 import { isAssignableTeacher } from "@/lib/scope";
 import { BusinessRuleError, created, handleApiError, ok, readJson, readQuery } from "@/lib/api";
 import { linkTeacherToSubject } from "@/lib/teacher-subjects";
+import { resolveOwnGroupIds } from "@/lib/group-access";
 
 const SCOPE = "groups";
 
@@ -40,6 +41,8 @@ const createGroupSchema = z.object({
 const GROUP_LIST_PERMISSIONS = [
   "academic.groups.manage",
   "students.view",
+  "payments.view",
+  "sessions.view",
   "parents.view",
   "teachers.view"
 ] as const;
@@ -49,10 +52,12 @@ export async function GET(request: NextRequest) {
     const ctx = await requireAnyPermission(GROUP_LIST_PERMISSIONS);
     const query = readQuery(request, listQuerySchema);
     const branchIds = resolveBranchScope(ctx, query.branchId);
+    const ownGroupIds = await resolveOwnGroupIds(ctx);
 
     const groups = await db.group.findMany({
       where: {
         deletedAt: null,
+        ...(ownGroupIds ? { id: { in: ownGroupIds } } : {}),
         branch: { center: { organizationId: ctx.organizationId } },
         ...(branchIds ? { branchId: { in: branchIds } } : {}),
         ...(query.gradeId ? { gradeId: query.gradeId } : {}),

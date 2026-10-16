@@ -99,15 +99,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     ...PERMISSIONS.academic,
     "audit_logs.view"
   ],
-  ACCOUNTANT: [
-    ...PERMISSIONS.payments,
-    "students.view",
-    "reports.view",
-    "reports.financial.view",
-    "reports.export",
-    "notifications.view"
-  ],
-  // Teachers deliberately get NO financial or user-management keys (spec §23).
+  // ACCOUNTANT — subscriptions & payments ONLY, for every student / stage / group.
+  // No student, parent, teacher, attendance or academic access.
+  ACCOUNTANT: [...PERMISSIONS.payments, "reports.financial.view", "reports.export"],
+  // TEACHER — own groups only (enforced in src/lib/group-access.ts).
   TEACHER: [
     "students.view",
     "sessions.view",
@@ -126,13 +121,26 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     "performance.recognize",
     "reports.view"
   ],
+  // TEACHER_ASSISTANT — everything about the group(s) he is responsible for:
+  // attendance, recitation, homework, exams/grades and student performance.
+  // Never finance, users, settings or other groups (group scoping is enforced
+  // on the server by resolveOwnGroupIds in src/lib/group-access.ts).
   TEACHER_ASSISTANT: [
     "students.view",
     "sessions.view",
     "attendance.view",
     "attendance.create",
+    "exams.view",
+    "exams.create",
+    "exams.update",
+    "grades.enter",
+    "grades.update",
     "recitation.view",
-    "recitation.manage"
+    "recitation.manage",
+    "assignments.view",
+    "assignments.manage",
+    "performance.view",
+    "performance.recognize"
   ],
   RECEPTIONIST: [
     "students.view",
