@@ -2,10 +2,12 @@ import type { ReactNode } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { OverdueNotices } from "@/components/payments/OverdueNotices";
+import { TableCards } from "@/components/TableCards";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen bg-surface-light-muted dark:bg-surface-dark">
+      <TableCards />
       <Sidebar />
       {/* min-w-0 is essential: without it a wide table/grid inside a flex child
           stretches the whole page instead of scrolling inside its own card. */}

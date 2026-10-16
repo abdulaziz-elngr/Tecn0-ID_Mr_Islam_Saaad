@@ -1,167 +1,130 @@
 import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, resolveBranchScope } from "@/lib/rbac";
-import { handleApiError, ok, created, readJson, readQuery, paginationSchema, BusinessRuleError } from "@/lib/api";
+import { requirePermission } from "@/lib/rbac";
+import { handleApiError, ok, readJson, NotFoundError, BusinessRuleError } from "@/lib/api";
 import { writeAuditLog } from "@/lib/audit";
-import { loadAccessibleGroup, ownGroupFilter, resolveOwnTeacherId } from "@/lib/group-access";
+import { validateScore, InvalidScoreError } from "@/lib/grading";
+import { loadAccessibleGroup } from "@/lib/group-access";
 
-const listSchema = paginationSchema.extend({
-  branchId: z.string().uuid().optional(),
-  groupId: z.string().uuid().optional(),
-  subjectId: z.string().uuid().optional(),
-  upcoming: z.enum(["true", "false"]).optional()
-});
+/**
+ * Bulk grade entry (spec §26). Teachers enter a whole group at once;
+ * every score is validated against the exam maximum (Rule 8) BEFORE
+ * anything is written, so a single bad row rejects the whole batch
+ * instead of half-saving a grade sheet.
+ */
 
-const createSchema = z.object({
-  groupId: z.string().uuid(),
-  // Optional: defaults to the group's own subject (only needed for legacy groups without one).
-  subjectId: z.string().uuid().optional(),
-  name: z.string().trim().min(2).max(150),
-  date: z.string().datetime(),
-  maxScore: z.number().positive().max(10000),
-  durationMinutes: z.number().int().min(1).max(600).optional(),
-  description: z.string().trim().max(1000).optional()
-});
-
-export async function GET(request: NextRequest) {
-  try {
-    const ctx = await requirePermission("exams.view");
-    const query = readQuery(request, listSchema);
-    const branchIds = resolveBranchScope(ctx, query.branchId);
-
-    // A group filter is verified (branch scope + "own groups" rule for teachers);
-    // without one, teachers only see the exams of the groups they teach.
-    if (query.groupId) await loadAccessibleGroup(ctx, query.groupId);
-    const teacherScope = query.groupId ? undefined : await resolveOwnTeacherId(ctx);
-
-    const where = {
-      organizationId: ctx.organizationId,
-      deletedAt: null,
-      ...(branchIds ? { branchId: { in: branchIds } } : {}),
-      ...(query.groupId ? { groupId: query.groupId } : {}),
-      ...(teacherScope !== undefined ? { group: ownGroupFilter(teacherScope) } : {}),
-      ...(query.subjectId ? { subjectId: query.subjectId } : {}),
-      ...(query.upcoming === "true" ? { date: { gte: new Date() } } : {})
-    };
-
-    const [total, exams] = await Promise.all([
-      db.exam.count({ where }),
-      db.exam.findMany({
-        where,
-        orderBy: { date: "desc" },
-        skip: (query.page - 1) * query.pageSize,
-        take: query.pageSize,
-        select: {
-          id: true,
-          name: true,
-          date: true,
-          maxScore: true,
-          isPublished: true,
-          groupId: true,
-          subject: { select: { id: true, name: true } },
-          group: { select: { id: true, name: true } },
-          _count: { select: { results: true } }
-        }
+const bodySchema = z.object({
+  results: z
+    .array(
+      z.object({
+        studentId: z.string().uuid(),
+        score: z.number().nullable().optional(),
+        isAbsent: z.boolean().default(false),
+        notes: z.string().trim().max(300).optional()
       })
-    ]);
+    )
+    .min(1)
+    .max(300),
+  reason: z.string().trim().max(500).optional()
+});
 
-    // Per-exam progress (students / graded / absent) for the "previous exams" list.
-    const examIds = exams.map((e) => e.id);
-    const groupIds = Array.from(new Set(exams.map((e) => e.groupId)));
-    const [gradedRows, absentRows, studentRows] =
-      exams.length === 0
-        ? [[], [], []]
-        : await Promise.all([
-            db.examResult.groupBy({
-              by: ["examId"],
-              where: { examId: { in: examIds }, isAbsent: false, score: { not: null } },
-              _count: { _all: true }
-            }),
-            db.examResult.groupBy({
-              by: ["examId"],
-              where: { examId: { in: examIds }, isAbsent: true },
-              _count: { _all: true }
-            }),
-            db.student.groupBy({
-              by: ["groupId"],
-              where: { groupId: { in: groupIds }, deletedAt: null, status: "ACTIVE" },
-              _count: { _all: true }
-            })
-          ]);
-    const graded = new Map(gradedRows.map((r) => [r.examId, r._count._all]));
-    const absent = new Map(absentRows.map((r) => [r.examId, r._count._all]));
-    const students = new Map(studentRows.map((r) => [r.groupId, r._count._all]));
-
-    return ok({
-      exams: exams.map((e) => {
-        const studentCount = students.get(e.groupId) ?? 0;
-        const gradedCount = graded.get(e.id) ?? 0;
-        const absentCount = absent.get(e.id) ?? 0;
-        return {
-          ...e,
-          maxScore: Number(e.maxScore),
-          studentCount,
-          gradedCount,
-          absentCount,
-          pendingCount: Math.max(0, studentCount - gradedCount - absentCount)
-        };
-      }),
-      pagination: {
-        page: query.page,
-        pageSize: query.pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / query.pageSize))
-      }
-    });
-  } catch (err) {
-    return handleApiError("exams.list", err);
-  }
-}
-
-export async function POST(request: NextRequest) {
+export async function PUT(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const ctx = await requirePermission("exams.create");
-    const input = await readJson(request, createSchema);
-
-    // Branch scope + "teachers only create exams for the groups they teach".
-    const group = await loadAccessibleGroup(ctx, input.groupId);
-
-    const subjectId = input.subjectId ?? group.subjectId;
-    if (!subjectId) {
-      throw new BusinessRuleError("This group has no subject. Choose a subject for the exam.", { status: 400 });
-    }
-    const subject = await db.subject.findFirst({
-      where: { id: subjectId, organizationId: ctx.organizationId, deletedAt: null }
-    });
-    if (!subject) throw new BusinessRuleError("Invalid subject.", { status: 400 });
-
-    const exam = await db.exam.create({
-      data: {
+    const ctx = await requirePermission("grades.enter");
+    const exam = await db.exam.findFirst({
+      where: {
+        id: params.id,
         organizationId: ctx.organizationId,
-        branchId: group.branchId,
-        subjectId: subject.id,
-        groupId: group.id,
-        name: input.name,
-        date: new Date(input.date),
-        maxScore: input.maxScore,
-        durationMinutes: input.durationMinutes,
-        description: input.description,
-        createdById: ctx.userId
-      }
+        deletedAt: null,
+        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
+      },
+      select: { id: true, maxScore: true, groupId: true, isPublished: true }
     });
+    if (!exam) throw new NotFoundError("Exam not found.");
+    await loadAccessibleGroup(ctx, exam.groupId);
+
+    const input = await readJson(request, bodySchema);
+    const maxScore = Number(exam.maxScore);
+
+    // Editing an already-entered grade requires the stronger permission.
+    const existingResults = await db.examResult.findMany({
+      where: { examId: exam.id },
+      select: { studentId: true, score: true, isAbsent: true }
+    });
+    const existingByStudent = new Map(existingResults.map((r) => [r.studentId, r]));
+    const editsExisting = input.results.some((r) => {
+      const prev = existingByStudent.get(r.studentId);
+      return prev && prev.score !== null;
+    });
+    if (editsExisting && !ctx.permissions.has("grades.update")) {
+      throw new BusinessRuleError("You are not allowed to change an already-recorded grade.", {
+        status: 403
+      });
+    }
+    if (editsExisting && !input.reason) {
+      throw new BusinessRuleError("A reason is required when changing an existing grade.");
+    }
+
+    // Students must belong to the exam's group. Student.groupId is the
+    // direct source of truth (there is no groupStudent join table).
+    const enrolled = await db.student.findMany({
+      where: { groupId: exam.groupId },
+      select: { id: true }
+    });
+    const enrolledIds = new Set(enrolled.map((e) => e.id));
+
+    try {
+      for (const row of input.results) {
+        if (!enrolledIds.has(row.studentId)) {
+          throw new BusinessRuleError("One of the students is not enrolled in this exam's group.");
+        }
+        if (!row.isAbsent && row.score !== null && row.score !== undefined) {
+          validateScore(row.score, maxScore);
+        }
+      }
+    } catch (err) {
+      if (err instanceof InvalidScoreError) {
+        throw new BusinessRuleError(err.message, { code: "INVALID_SCORE" });
+      }
+      throw err;
+    }
+
+    await db.$transaction(
+      input.results.map((row) =>
+        db.examResult.upsert({
+          where: { examId_studentId: { examId: exam.id, studentId: row.studentId } },
+          create: {
+            examId: exam.id,
+            studentId: row.studentId,
+            score: row.isAbsent ? null : row.score ?? null,
+            isAbsent: row.isAbsent,
+            notes: row.notes,
+            enteredById: ctx.userId
+          },
+          update: {
+            score: row.isAbsent ? null : row.score ?? null,
+            isAbsent: row.isAbsent,
+            notes: row.notes,
+            enteredById: ctx.userId
+          }
+        })
+      )
+    );
 
     await writeAuditLog({
       organizationId: ctx.organizationId,
       actorUserId: ctx.userId,
-      action: "CREATE_EXAM",
+      action: editsExisting ? "UPDATE_GRADES" : "ENTER_GRADES",
       entityType: "Exam",
       entityId: exam.id,
-      afterValue: exam
+      beforeValue: existingResults,
+      afterValue: input.results,
+      reason: input.reason
     });
 
-    return created({ ...exam, maxScore: Number(exam.maxScore) });
+    return ok({ saved: input.results.length });
   } catch (err) {
-    return handleApiError("exams.create", err);
+    return handleApiError("exams.results", err);
   }
 }

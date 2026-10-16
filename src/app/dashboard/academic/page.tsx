@@ -4,198 +4,85 @@ import Link from "next/link";
 import { useMemo, useState, type FormEvent } from "react";
 import { useI18n } from "@/lib/i18n";
 import { apiDelete, apiPatch, apiPost, useApi } from "@/lib/client";
-import { Badge, ConfirmDialog, ErrorNotice, Field, Modal, PageHeader, useToast } from "@/components/ui";
+import { ConfirmDialog, DataTable, ErrorNotice, Field, Modal, PageHeader, useToast } from "@/components/ui";
 
-interface StageOption {
-  id: string;
-  name: string;
-  isActive: boolean;
-  grades: { id: string; name: string; isActive: boolean }[];
-}
-
-interface SubjectOption {
+interface SubjectRow {
   id: string;
   name: string;
   code: string | null;
+  _count: { exams: number };
+  totals: {
+    groups: number;
+    activeGroups: number;
+    students: number;
+    capacity: number;
+    stages: { id: string; name: string }[];
+    grades: { id: string; name: string; stageName: string }[];
+  };
+  teachers: { id: string; fullName: string }[];
 }
 
-interface StaffOption {
+interface TeacherOption {
   id: string;
   fullName: string;
 }
 
-interface GroupRow {
-  id: string;
-  branchId: string;
-  name: string;
-  capacity: number;
-  notes: string | null;
-  currentCount: number;
-  remaining: number;
-  capacityPercent: number;
-  isFull: boolean;
-  isActive: boolean;
-  grade: { id: string; name: string; stage: { id: string; name: string } };
-  subject: { id: string; name: string; code: string | null } | null;
-  teacher: StaffOption | null;
-  assistant: StaffOption | null;
-  schedules: { dayOfWeek: string; startMinutes: number; endMinutes: number }[];
-}
-
-interface FormState {
-  stageId: string;
-  gradeId: string;
-  subjectId: string;
-  name: string;
-  capacity: number;
-  teacherId: string;
-  assistantId: string;
-  notes: string;
-}
-
-const EMPTY_FORM: FormState = {
-  stageId: "",
-  gradeId: "",
-  subjectId: "",
-  name: "",
-  capacity: 20,
-  teacherId: "",
-  assistantId: "",
-  notes: ""
-};
-
-function formatTime(minutes: number) {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  const period = h >= 12 ? "PM" : "AM";
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
-}
-
-const NO_SUBJECT_KEY = "__none__";
+const MAX_CHIPS = 3;
 
 /**
- * Groups Management: the Stage -> Grade -> Subject -> Group tree with
- * filters (stage, grade, subject, teacher, free text), each group's subject,
- * teacher, schedule and live capacity, and create / edit / archive / delete.
- * A group is always created against a Grade (picked via its Stage) AND one
- * Subject. Groups with history can never be deleted — they are archived.
+ * Subjects: one row per subject showing who teaches it (Teacher), which
+ * stages/grades it runs in, and how many groups/students it has
+ * (Subject -> Teacher -> Groups -> Students). Rows link to the detail page.
  */
-export default function GroupsPage() {
+export default function SubjectsPage() {
   const { t } = useI18n();
   const toast = useToast();
-  const { data: groups, loading, error, reload } = useApi<GroupRow[]>("/api/groups");
-  const { data: stages } = useApi<StageOption[]>("/api/stages");
-  const { data: subjects, error: subjectsError } = useApi<SubjectOption[]>("/api/subjects");
-  const { data: teacherList } = useApi<StaffOption[]>("/api/teachers?pageSize=100&isAssistant=false");
-  const { data: assistantList } = useApi<StaffOption[]>("/api/teachers?pageSize=100&isAssistant=true");
+  const { data, loading, error, reload } = useApi<SubjectRow[]>("/api/subjects");
+  const { data: teacherList } = useApi<TeacherOption[]>("/api/teachers?pageSize=100&isAssistant=false");
 
-  // Filters
   const [search, setSearch] = useState("");
-  const [fStage, setFStage] = useState("");
-  const [fGrade, setFGrade] = useState("");
-  const [fSubject, setFSubject] = useState("");
-  const [fTeacher, setFTeacher] = useState("");
-
-  // Create / edit modal
-  const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<GroupRow | null>(null);
-  const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<SubjectRow | null>(null);
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [teacherIds, setTeacherIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SubjectRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
-  // Delete / archive confirmation
-  const [deleteTarget, setDeleteTarget] = useState<GroupRow | null>(null);
-  const [archiveTarget, setArchiveTarget] = useState<GroupRow | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const formStage = useMemo(() => (stages ?? []).find((s) => s.id === form.stageId), [stages, form.stageId]);
-  const filterStage = useMemo(() => (stages ?? []).find((s) => s.id === fStage), [stages, fStage]);
-
-  const teacherFilterOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const g of groups ?? []) if (g.teacher) map.set(g.teacher.id, g.teacher.fullName);
-    return Array.from(map.entries())
-      .map(([id, fullName]) => ({ id, fullName }))
-      .sort((a, b) => a.fullName.localeCompare(b.fullName));
-  }, [groups]);
-
-  const subjectFilterOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const g of groups ?? []) if (g.subject) map.set(g.subject.id, g.subject.name);
-    return Array.from(map.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [groups]);
-
-  const filtered = useMemo(() => {
+  const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return (groups ?? []).filter((g) => {
-      if (fStage && g.grade.stage.id !== fStage) return false;
-      if (fGrade && g.grade.id !== fGrade) return false;
-      if (fSubject && g.subject?.id !== fSubject) return false;
-      if (fTeacher && g.teacher?.id !== fTeacher) return false;
-      if (q) {
-        const haystack = [g.name, g.subject?.name, g.subject?.code, g.teacher?.fullName, g.assistant?.fullName]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [groups, search, fStage, fGrade, fSubject, fTeacher]);
-
-  const hasFilters = Boolean(search || fStage || fGrade || fSubject || fTeacher);
-
-  // Stage -> Grade -> Subject -> Group (the order the API already returns rows in).
-  const tree = useMemo(() => {
-    type SubjectNode = { key: string; name: string; groups: GroupRow[] };
-    type GradeNode = { name: string; subjects: Map<string, SubjectNode> };
-    type StageNode = { name: string; grades: Map<string, GradeNode> };
-    const byStage = new Map<string, StageNode>();
-    for (const g of filtered) {
-      const stageNode = byStage.get(g.grade.stage.id) ?? { name: g.grade.stage.name, grades: new Map() };
-      byStage.set(g.grade.stage.id, stageNode);
-      const gradeNode = stageNode.grades.get(g.grade.id) ?? { name: g.grade.name, subjects: new Map() };
-      stageNode.grades.set(g.grade.id, gradeNode);
-      const key = g.subject?.id ?? NO_SUBJECT_KEY;
-      const subjectNode = gradeNode.subjects.get(key) ?? {
-        key,
-        name: g.subject?.name ?? t("groups.noSubject"),
-        groups: []
-      };
-      gradeNode.subjects.set(key, subjectNode);
-      subjectNode.groups.push(g);
-    }
-    return byStage;
-  }, [filtered, t]);
+    if (!q) return data ?? [];
+    return (data ?? []).filter((s) =>
+      [s.name, s.code, ...s.teachers.map((x) => x.fullName)]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [data, search]);
 
   function openCreate() {
     setEditing(null);
-    setForm({ ...EMPTY_FORM, stageId: fStage, gradeId: fGrade, subjectId: fSubject });
+    setName("");
+    setCode("");
+    setTeacherIds([]);
     setFormError(null);
-    setFormOpen(true);
+    setModalOpen(true);
   }
 
-  function openEdit(g: GroupRow) {
-    setEditing(g);
-    setForm({
-      stageId: g.grade.stage.id,
-      gradeId: g.grade.id,
-      subjectId: g.subject?.id ?? "",
-      name: g.name,
-      capacity: g.capacity,
-      teacherId: g.teacher?.id ?? "",
-      assistantId: g.assistant?.id ?? "",
-      notes: g.notes ?? ""
-    });
+  function openEdit(subject: SubjectRow) {
+    setEditing(subject);
+    setName(subject.name);
+    setCode(subject.code ?? "");
+    setTeacherIds(subject.teachers.map((x) => x.id));
     setFormError(null);
-    setFormOpen(true);
+    setModalOpen(true);
   }
 
-  function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((prev) => ({ ...prev, [key]: value }));
+  function toggleTeacher(id: string) {
+    setTeacherIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -203,397 +90,205 @@ export default function GroupsPage() {
     setSubmitting(true);
     setFormError(null);
     try {
-      if (!form.subjectId) throw new Error(t("groups.subjectRequired"));
+      const payload = { name: name.trim(), code: code.trim() || null, teacherIds };
       if (editing) {
-        await apiPatch(`/api/groups/${editing.id}`, {
-          name: form.name.trim(),
-          capacity: form.capacity,
-          subjectId: form.subjectId,
-          teacherId: form.teacherId || null,
-          assistantId: form.assistantId || null,
-          notes: form.notes.trim()
-        });
+        await apiPatch(`/api/subjects/${editing.id}`, payload);
         toast.success(t("common.saved"));
       } else {
-        // branchId: single-branch assumption (as before) — a branch picker
-        // would be added here for multi-branch organizations.
-        const branches = await fetch("/api/branches").then((r) => r.json()).catch(() => null);
-        const branchId = branches?.data?.[0]?.id;
-        if (!branchId) throw new Error("No branch available for this account.");
-        await apiPost("/api/groups", {
-          branchId,
-          gradeId: form.gradeId,
-          subjectId: form.subjectId,
-          name: form.name.trim(),
-          capacity: form.capacity,
-          teacherId: form.teacherId || undefined,
-          assistantId: form.assistantId || undefined,
-          notes: form.notes.trim() || undefined
-        });
+        await apiPost("/api/subjects", payload);
         toast.success(t("common.created"));
       }
-      setFormOpen(false);
+      setModalOpen(false);
       reload();
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to save group.");
+      setFormError(err instanceof Error ? err.message : "Failed to save subject.");
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function handleArchiveToggle() {
-    if (!archiveTarget) return;
-    setBusy(true);
-    try {
-      await apiPatch(`/api/groups/${archiveTarget.id}`, { isActive: !archiveTarget.isActive });
-      toast.success(t("common.saved"));
-      setArchiveTarget(null);
-      reload();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to update group.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function handleDelete() {
     if (!deleteTarget) return;
-    setBusy(true);
+    setDeleting(true);
     try {
-      await apiDelete(`/api/groups/${deleteTarget.id}`);
+      await apiDelete(`/api/subjects/${deleteTarget.id}`);
       toast.success(t("common.deleted"));
       setDeleteTarget(null);
       reload();
     } catch (err) {
-      // The server explains exactly what blocks deletion (students / history).
-      toast.error(err instanceof Error ? err.message : t("groups.cannotDelete"));
+      toast.error(err instanceof Error ? err.message : "Failed to delete subject.");
       setDeleteTarget(null);
     } finally {
-      setBusy(false);
+      setDeleting(false);
     }
   }
 
-  const canSubmit =
-    !submitting && form.name.trim().length > 0 && Boolean(form.subjectId) && (Boolean(editing) || Boolean(form.gradeId));
+  // Teachers shown in the picker: everyone assignable, plus anyone already on the subject
+  // (so an edit never silently drops a teacher that is outside the first page of results).
+  const pickerTeachers = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const x of teacherList ?? []) map.set(x.id, x.fullName);
+    for (const x of editing?.teachers ?? []) map.set(x.id, x.fullName);
+    return Array.from(map.entries())
+      .map(([id, fullName]) => ({ id, fullName }))
+      .sort((a, b) => a.fullName.localeCompare(b.fullName));
+  }, [teacherList, editing]);
 
   return (
     <div className="space-y-5">
       <PageHeader
-        title={t("nav.groups")}
+        title={t("subjects.title")}
         actions={
           <button type="button" className="btn-primary" onClick={openCreate}>
-            {t("groups.add")}
+            {t("subjects.add")}
           </button>
         }
       />
 
       <ErrorNotice message={error} />
 
-      {/* Filters */}
-      <div className="card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-6">
-        <input
-          className="input lg:col-span-2"
-          placeholder={t("groups.search")}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          aria-label={t("common.search")}
-        />
-        <select
-          className="input"
-          value={fStage}
-          onChange={(e) => {
-            setFStage(e.target.value);
-            setFGrade("");
-          }}
-          aria-label={t("nav.stages")}
-        >
-          <option value="">{t("groups.allStages")}</option>
-          {(stages ?? []).map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-        <select
-          className="input"
-          value={fGrade}
-          onChange={(e) => setFGrade(e.target.value)}
-          disabled={!fStage}
-          aria-label={t("grades.title")}
-        >
-          <option value="">{t("groups.allGrades")}</option>
-          {(filterStage?.grades ?? []).map((g) => (
-            <option key={g.id} value={g.id}>
-              {g.name}
-            </option>
-          ))}
-        </select>
-        <select className="input" value={fSubject} onChange={(e) => setFSubject(e.target.value)} aria-label={t("groups.subject")}>
-          <option value="">{t("groups.allSubjects")}</option>
-          {subjectFilterOptions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-        <select className="input" value={fTeacher} onChange={(e) => setFTeacher(e.target.value)} aria-label={t("groups.teacher")}>
-          <option value="">{t("groups.allTeachers")}</option>
-          {teacherFilterOptions.map((x) => (
-            <option key={x.id} value={x.id}>
-              {x.fullName}
-            </option>
-          ))}
-        </select>
-        {hasFilters && (
-          <button
-            type="button"
-            className="text-xs text-black/60 hover:underline sm:col-span-2 lg:col-span-6 lg:justify-self-end dark:text-white/60"
-            onClick={() => {
-              setSearch("");
-              setFStage("");
-              setFGrade("");
-              setFSubject("");
-              setFTeacher("");
-            }}
-          >
-            {t("common.clearFilters")}
-          </button>
-        )}
-      </div>
+      <input
+        className="input max-w-md"
+        placeholder={t("subjects.search")}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        aria-label={t("common.search")}
+      />
 
-      {loading && <p className="text-sm text-black/50 dark:text-white/50">{t("common.loading")}</p>}
-
-      {!loading && (groups?.length ?? 0) === 0 && (
-        <div className="card p-6 text-sm text-black/60 dark:text-white/60">{t("groups.empty")}</div>
-      )}
-
-      {!loading && (groups?.length ?? 0) > 0 && filtered.length === 0 && (
-        <div className="card p-6 text-sm text-black/60 dark:text-white/60">{t("groups.noMatches")}</div>
-      )}
-
-      <div className="space-y-6">
-        {Array.from(tree.entries()).map(([stageKey, stage]) => (
-          <div key={stageKey} className="space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">{stage.name}</h2>
-            {Array.from(stage.grades.entries()).map(([gradeKey, grade]) => (
-              <div key={gradeKey} className="card space-y-4 p-4">
-                <h3 className="font-medium">{grade.name}</h3>
-                {Array.from(grade.subjects.values()).map((subject) => (
-                  <div key={subject.key}>
-                    <p className="mb-2 flex items-center gap-2 text-sm font-medium text-tecno-gold-dark dark:text-tecno-gold">
-                      {subject.key === NO_SUBJECT_KEY ? (
-                        <span>{subject.name}</span>
-                      ) : (
-                        <Link href={`/dashboard/academic/subjects/${subject.key}`} className="hover:underline">
-                          {subject.name}
-                        </Link>
-                      )}
-                      <span className="text-xs font-normal text-black/40 dark:text-white/40">({subject.groups.length})</span>
+      <DataTable
+        columns={[
+          t("subjects.title"),
+          t("subjects.stages"),
+          t("subjects.teachers"),
+          t("subjects.groups"),
+          t("subjects.students"),
+          t("subjects.exams"),
+          t("common.actions")
+        ]}
+        loading={loading}
+        isEmpty={rows.length === 0}
+        emptyTitle={t("subjects.empty")}
+      >
+        {rows.map((subject) => (
+          <tr key={subject.id} className="border-b border-black/5 align-top dark:border-white/5">
+            <td className="p-3">
+              <Link href={`/dashboard/academic/subjects/${subject.id}`} className="font-medium hover:underline">
+                {subject.name}
+              </Link>
+              {subject.code && <span className="ms-2 font-mono text-xs text-black/50 dark:text-white/50">{subject.code}</span>}
+            </td>
+            <td className="p-3 text-xs">
+              {subject.totals.grades.length === 0 ? (
+                "—"
+              ) : (
+                <div className="space-y-0.5">
+                  {subject.totals.grades.slice(0, MAX_CHIPS).map((g) => (
+                    <p key={g.id}>
+                      {g.stageName} · {g.name}
                     </p>
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {subject.groups.map((g) => (
-                        <div
-                          key={g.id}
-                          className="flex flex-col rounded-xl border border-black/10 p-3 transition hover:border-tecno-gold dark:border-white/10"
-                        >
-                          <Link href={`/dashboard/academic/groups/${g.id}`} className="block flex-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="font-semibold">{g.name}</span>
-                              {!g.isActive ? (
-                                <Badge tone="neutral">{t("common.archived")}</Badge>
-                              ) : g.isFull ? (
-                                <Badge tone="danger">{t("groups.full")}</Badge>
-                              ) : (
-                                <Badge tone="success">{t("common.active")}</Badge>
-                              )}
-                            </div>
-                            <p className="mt-1 text-xs text-black/60 dark:text-white/60">
-                              {t("groups.teacher")}: {g.teacher?.fullName ?? "—"}
-                            </p>
-                            {g.subject === null && (
-                              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{t("groups.legacyNoSubject")}</p>
-                            )}
-                            <div className="mt-2">
-                              <div className="mb-1 flex items-center justify-between text-xs">
-                                <span>
-                                  {g.currentCount} / {g.capacity}
-                                </span>
-                                <span className="text-black/50 dark:text-white/50">{g.capacityPercent}%</span>
-                              </div>
-                              <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-                                <div
-                                  className={`h-full rounded-full ${g.isFull ? "bg-red-500" : "bg-tecno-gold"}`}
-                                  style={{ width: `${Math.min(100, g.capacityPercent)}%` }}
-                                />
-                              </div>
-                            </div>
-                            <p className="mt-2 text-xs text-black/50 dark:text-white/50">
-                              {g.schedules.length > 0
-                                ? g.schedules
-                                    .map((s) => `${s.dayOfWeek} ${formatTime(s.startMinutes)}–${formatTime(s.endMinutes)}`)
-                                    .join(" · ")
-                                : t("groups.noSchedule")}
-                            </p>
-                          </Link>
-                          <div className="mt-3 flex flex-wrap gap-3 border-t border-black/5 pt-2 text-xs dark:border-white/10">
-                            <button type="button" className="hover:underline" onClick={() => openEdit(g)}>
-                              {t("common.edit")}
-                            </button>
-                            <button type="button" className="hover:underline" onClick={() => setArchiveTarget(g)}>
-                              {g.isActive ? t("common.archive") : t("common.restore")}
-                            </button>
-                            <button
-                              type="button"
-                              className="text-red-600 hover:underline dark:text-red-400"
-                              onClick={() => setDeleteTarget(g)}
-                            >
-                              {t("common.delete")}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                  {subject.totals.grades.length > MAX_CHIPS && (
+                    <p className="text-black/50 dark:text-white/50">+{subject.totals.grades.length - MAX_CHIPS}</p>
+                  )}
+                </div>
+              )}
+            </td>
+            <td className="p-3">
+              {subject.teachers.length === 0 ? (
+                <span className="text-black/50 dark:text-white/50">{t("subjects.noTeachers")}</span>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {subject.teachers.slice(0, MAX_CHIPS).map((x) => (
+                    <span
+                      key={x.id}
+                      className="rounded-full bg-tecno-gold/15 px-2 py-0.5 text-xs text-tecno-gold-dark dark:text-tecno-gold"
+                    >
+                      {x.fullName}
+                    </span>
+                  ))}
+                  {subject.teachers.length > MAX_CHIPS && (
+                    <span
+                      title={subject.teachers.slice(MAX_CHIPS).map((x) => x.fullName).join("\n")}
+                      className="rounded-full bg-black/5 px-2 py-0.5 text-xs dark:bg-white/10"
+                    >
+                      +{subject.teachers.length - MAX_CHIPS}
+                    </span>
+                  )}
+                </div>
+              )}
+            </td>
+            <td className="p-3">{subject.totals.groups}</td>
+            <td className="p-3">
+              {subject.totals.students}
+              {subject.totals.capacity > 0 && (
+                <span className="text-xs text-black/50 dark:text-white/50"> / {subject.totals.capacity}</span>
+              )}
+            </td>
+            <td className="p-3">{subject._count.exams}</td>
+            <td className="p-3">
+              <div className="flex gap-3">
+                <Link href={`/dashboard/academic/subjects/${subject.id}`} className="text-xs hover:underline">
+                  {t("subjects.view")}
+                </Link>
+                <button type="button" className="text-xs hover:underline" onClick={() => openEdit(subject)}>
+                  {t("common.edit")}
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-red-600 hover:underline dark:text-red-400"
+                  onClick={() => setDeleteTarget(subject)}
+                >
+                  {t("common.delete")}
+                </button>
               </div>
-            ))}
-          </div>
+            </td>
+          </tr>
         ))}
-      </div>
+      </DataTable>
 
-      <Modal open={formOpen} title={editing ? t("groups.edit") : t("groups.add")} onClose={() => setFormOpen(false)}>
+      <Modal open={modalOpen} title={editing ? t("common.edit") : t("subjects.add")} onClose={() => setModalOpen(false)}>
         <form onSubmit={handleSubmit} className="space-y-3">
           <ErrorNotice message={formError} />
-          {subjectsError && <ErrorNotice message={subjectsError} />}
-          <Field label={t("nav.stages")} required>
+          <Field label={t("subjects.title")} required>
             {(id) => (
-              <select
-                id={id}
-                className="input"
-                value={form.stageId}
-                disabled={Boolean(editing)}
-                onChange={(e) => setForm((p) => ({ ...p, stageId: e.target.value, gradeId: "" }))}
-                required
-              >
-                <option value="" disabled>
-                  {t("common.select")}
-                </option>
-                {(stages ?? [])
-                  .filter((s) => s.isActive || s.id === form.stageId)
-                  .map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-              </select>
+              <input id={id} className="input" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
             )}
           </Field>
-          <Field label={t("grades.title")} required>
-            {(id) => (
-              <select
-                id={id}
-                className="input"
-                value={form.gradeId}
-                onChange={(e) => setField("gradeId", e.target.value)}
-                required
-                disabled={!form.stageId || Boolean(editing)}
-              >
-                <option value="" disabled>
-                  {t("common.select")}
-                </option>
-                {(formStage?.grades ?? [])
-                  .filter((g) => g.isActive || g.id === form.gradeId)
-                  .map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name}
-                    </option>
-                  ))}
-              </select>
-            )}
-          </Field>
-          {editing && <p className="text-xs text-black/50 dark:text-white/50">{t("groups.gradeLocked")}</p>}
-          <Field label={t("groups.subject")} required>
-            {(id) => (
-              <select
-                id={id}
-                className="input"
-                value={form.subjectId}
-                onChange={(e) => setField("subjectId", e.target.value)}
-                required
-              >
-                <option value="" disabled>
-                  {t("common.select")}
-                </option>
-                {(subjects ?? []).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.code ? `${s.name} (${s.code})` : s.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <Field label={t("groups.name")} required>
-            {(id) => (
-              <input id={id} className="input" value={form.name} onChange={(e) => setField("name", e.target.value)} required />
-            )}
-          </Field>
-          <Field label={t("groups.capacity")} required>
+          <Field label={t("subjects.code")}>
             {(id) => (
               <input
                 id={id}
-                type="number"
-                min={1}
                 className="input"
-                value={form.capacity}
-                onChange={(e) => setField("capacity", Number(e.target.value))}
-                required
+                value={code}
+                maxLength={20}
+                dir="ltr"
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="MATH"
               />
             )}
           </Field>
-          <Field label={t("groups.teacher")}>
-            {(id) => (
-              <select id={id} className="input" value={form.teacherId} onChange={(e) => setField("teacherId", e.target.value)}>
-                <option value="">—</option>
-                {(teacherList ?? []).map((x) => (
-                  <option key={x.id} value={x.id}>
-                    {x.fullName}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <Field label={t("groups.assistant")}>
-            {(id) => (
-              <select
-                id={id}
-                className="input"
-                value={form.assistantId}
-                onChange={(e) => setField("assistantId", e.target.value)}
-              >
-                <option value="">—</option>
-                {(assistantList ?? []).map((x) => (
-                  <option key={x.id} value={x.id}>
-                    {x.fullName}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <Field label={t("common.notes")}>
-            {(id) => (
-              <textarea id={id} className="input" rows={2} value={form.notes} onChange={(e) => setField("notes", e.target.value)} />
-            )}
-          </Field>
-          {!editing && (
-            <p className="text-xs text-black/50 dark:text-white/50">
-              Add the group's days and times from its detail page after creating it.
+          <div>
+            <p className="mb-1 text-sm font-medium">
+              {t("subjects.teachers")} ({teacherIds.length})
             </p>
-          )}
+            <p className="mb-2 text-xs text-black/50 dark:text-white/50">{t("subjects.teachersHint")}</p>
+            <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border border-black/10 p-2 dark:border-white/10">
+              {pickerTeachers.length === 0 && (
+                <p className="text-sm text-black/50 dark:text-white/50">{t("subjects.noTeachers")}</p>
+              )}
+              {pickerTeachers.map((x) => (
+                <label key={x.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-black/[0.03] dark:hover:bg-white/[0.04]">
+                  <input type="checkbox" checked={teacherIds.includes(x.id)} onChange={() => toggleTeacher(x.id)} />
+                  {x.fullName}
+                </label>
+              ))}
+            </div>
+          </div>
           <div className="flex justify-end gap-2 pt-2">
-            <button type="button" className="btn-secondary" onClick={() => setFormOpen(false)}>
+            <button type="button" className="btn-secondary" onClick={() => setModalOpen(false)}>
               {t("common.cancel")}
             </button>
-            <button type="submit" className="btn-primary" disabled={!canSubmit}>
+            <button type="submit" className="btn-primary" disabled={submitting || !name.trim()}>
               {submitting ? t("common.loading") : t("common.save")}
             </button>
           </div>
@@ -602,24 +297,12 @@ export default function GroupsPage() {
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
-        title={t("groups.deleteTitle")}
-        message={`${deleteTarget?.name ?? ""}: ${t("groups.deleteMessage")}`}
+        title={t("common.delete")}
+        message={`${deleteTarget?.name ?? ""}: ${t("subjects.deleteMessage")}`}
         confirmLabel={t("common.delete")}
-        busy={busy}
+        busy={deleting}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={handleDelete}
-      />
-
-      <ConfirmDialog
-        open={Boolean(archiveTarget)}
-        title={archiveTarget?.isActive ? t("groups.archiveTitle") : t("common.restore")}
-        message={
-          archiveTarget?.isActive ? `${archiveTarget.name}: ${t("groups.archiveMessage")}` : (archiveTarget?.name ?? "")
-        }
-        confirmLabel={archiveTarget?.isActive ? t("common.archive") : t("common.restore")}
-        busy={busy}
-        onCancel={() => setArchiveTarget(null)}
-        onConfirm={handleArchiveToggle}
       />
     </div>
   );

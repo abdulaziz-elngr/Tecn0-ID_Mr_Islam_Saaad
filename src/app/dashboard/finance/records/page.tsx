@@ -76,7 +76,7 @@ export default function PaymentRecordsPage() {
         </div>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 2xl:grid-cols-2">
         {/* SECTION 1 — paid */}
         <section className="space-y-2" aria-label={t("rec.paid")}>
           <div className="flex flex-wrap items-center justify-between gap-2">
