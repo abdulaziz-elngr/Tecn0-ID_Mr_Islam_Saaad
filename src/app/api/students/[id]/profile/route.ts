@@ -140,13 +140,10 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
         })
       ]);
 
-      outstanding = round2(
-        subscriptions.reduce(
-          (sum, s) =>
-            sum + remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount)),
-          0
-        )
-      );
+      // Waived (fee-exempt) months owe nothing, whatever their stored amount.
+      const owed = (s: (typeof subscriptions)[number]) =>
+        s.status === "WAIVED" ? 0 : remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount));
+      outstanding = round2(subscriptions.reduce((sum, s) => sum + owed(s), 0));
 
       finance = {
         outstanding,
@@ -156,7 +153,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
           amount: Number(s.amount),
           discount: Number(s.discount),
           paidAmount: Number(s.paidAmount),
-          remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount)),
+          remaining: owed(s),
           status: s.status,
           dueDate: s.dueDate
         })),
@@ -205,6 +202,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     ].sort((a, b) => b.at.getTime() - a.at.getTime());
 
     return ok({
+      canManageFeeExemption: ctx.permissions.has("payments.update"),
       student: {
         id: student.id,
         studentCode: student.studentCode,
@@ -217,6 +215,16 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
         address: student.address,
         school: student.school,
         status: student.status,
+        // Fee concessions are financial data: hidden from roles without payments.view.
+        ...(canSeeFinance
+          ? {
+              feeExempt: student.feeExempt,
+              feeExemptFrom: student.feeExemptFrom,
+              feeExemptUntil: student.feeExemptUntil,
+              feeExemptReason: student.feeExemptReason,
+              feeExemptAt: student.feeExemptAt
+            }
+          : {}),
         enrollmentDate: student.enrollmentDate,
         notes: student.notes,
         emergencyContact: student.emergencyContact,

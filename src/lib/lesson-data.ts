@@ -7,6 +7,7 @@ import { getAnalyticsThresholds } from "./settings";
 import { countTrailingAbsences } from "./analytics";
 import { canCloseLesson, canOpenLesson, lateMinutes, nextLesson, type LessonStatus } from "./lesson-flow";
 import {
+  applyFeeExemption,
   buildSnapshotWarnings,
   countAttendance,
   isFeeUnpaid,
@@ -19,6 +20,8 @@ import {
 } from "./lesson-snapshot";
 import { remainingAmount } from "./billing";
 import { paymentWarningFor, type PaymentWarning } from "./payment-warning";
+import { exemptionWindowOf } from "./payment-ledger";
+import { inExemption } from "./subscription-months";
 import { DEFAULT_TIME_ZONE, sessionStartInstant } from "./tz";
 
 /**
@@ -290,7 +293,7 @@ export async function snapshotFor(
   const periodYear = session.date.getUTCFullYear();
   const periodMonth = session.date.getUTCMonth() + 1;
 
-  const [thisLesson, history, recitation, exam, subscriptions, thresholds, paymentWarning] = await Promise.all([
+  const [thisLesson, history, recitation, exam, subscriptions, thresholds, paymentWarning, exemptRow] = await Promise.all([
     db.attendance.findFirst({
       where: { sessionId: session.id, studentId: student.id, deletedAt: null },
       select: { type: true, recordedAt: true }
@@ -342,8 +345,18 @@ export async function snapshotFor(
     paymentWarningFor(ctx.organizationId, student.id).catch((err) => {
       console.error("[snapshot] payment warning failed", err);
       return null;
-    })
+    }),
+    canFees
+      ? db.student.findUnique({
+          where: { id: student.id },
+          select: { feeExempt: true, feeExemptFrom: true, feeExemptUntil: true }
+        })
+      : Promise.resolve(null)
   ]);
+  // Fee-exempt students owe nothing for the lesson's month (boundaries are stored at noon UTC).
+  const exemptThisMonth = Boolean(
+    exemptRow && inExemption(exemptionWindowOf(exemptRow, "UTC"), { year: periodYear, month: periodMonth })
+  );
 
   const lastRow = history[0] ?? null;
 
@@ -352,13 +365,16 @@ export async function snapshotFor(
   const consecutiveAbsences = countTrailingAbsences(chronological);
 
   const fee = canFees
-    ? resolveFeeState(
-        subscriptions.map((s) => ({
-          groupId: s.groupId,
-          status: s.status,
-          remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
-        })),
-        session.groupId
+    ? applyFeeExemption(
+        resolveFeeState(
+          subscriptions.map((s) => ({
+            groupId: s.groupId,
+            status: s.status,
+            remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
+          })),
+          session.groupId
+        ),
+        exemptThisMonth
       )
     : null;
 
@@ -613,15 +629,27 @@ export async function buildLessonReport(ctx: AuthContext, sessionId: string): Pr
       list.push(sub);
       byStudent.set(sub.studentId, list);
     }
+    const exemptRows = await db.student.findMany({
+      where: { id: { in: roster.map((s) => s.id) } },
+      select: { id: true, feeExempt: true, feeExemptFrom: true, feeExemptUntil: true }
+    });
+    const exemptIds = new Set(
+      exemptRows
+        .filter((r) => inExemption(exemptionWindowOf(r, "UTC"), { year, month }))
+        .map((r) => r.id)
+    );
     unpaid = [];
     for (const student of roster) {
-      const fee = resolveFeeState(
-        (byStudent.get(student.id) ?? []).map((s) => ({
-          groupId: s.groupId,
-          status: s.status,
-          remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
-        })),
-        session.groupId
+      const fee = applyFeeExemption(
+        resolveFeeState(
+          (byStudent.get(student.id) ?? []).map((s) => ({
+            groupId: s.groupId,
+            status: s.status,
+            remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
+          })),
+          session.groupId
+        ),
+        exemptIds.has(student.id)
       );
       if (isFeeUnpaid(fee.state)) {
         unpaid.push({

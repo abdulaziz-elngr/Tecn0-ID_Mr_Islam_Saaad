@@ -57,6 +57,17 @@ export interface LedgerEntry extends YearMonth {
   dueDate: Date;
   virtual: boolean;
   refunded: boolean;
+  /** True when the month is WAIVED because the student is exempt from monthly fees. */
+  exempt: boolean;
+}
+
+/**
+ * Months during which a student owes nothing. `from: null` = since the very
+ * first month, `until: null` = still running (open-ended).
+ */
+export interface ExemptionWindow {
+  from: YearMonth | null;
+  until: YearMonth | null;
 }
 
 export const MAX_LOOKBACK_MONTHS = 24;
@@ -144,6 +155,24 @@ export function ledgerStatus(params: {
   return "UNPAID";
 }
 
+export function inExemption(window: ExemptionWindow | null | undefined, ym: YearMonth): boolean {
+  if (!window) return false;
+  if (window.from && compareYm(ym, window.from) < 0) return false;
+  if (window.until && compareYm(ym, window.until) > 0) return false;
+  return true;
+}
+
+/**
+ * Applies a fee exemption to one ledger entry. Money that was really
+ * collected is never erased: a month that is already fully PAID stays PAID.
+ * Every other month inside the window becomes WAIVED with nothing remaining,
+ * so it can never show up as a debt, an overdue notice or a shortfall.
+ */
+function applyExemption(entry: LedgerEntry, window: ExemptionWindow | null | undefined): LedgerEntry {
+  if (!inExemption(window, entry) || entry.status === "PAID") return entry;
+  return { ...entry, status: "WAIVED", remaining: 0, exempt: true };
+}
+
 /**
  * Builds the ledger. `fees` are all fees ever configured for the student's
  * grade (history included). Months without a row and without any fee get
@@ -157,6 +186,8 @@ export function buildLedger(params: {
   fees: GradeFeeLike[];
   dueDay: number;
   now: Date;
+  /** Student fee exemption, if any (see ExemptionWindow). */
+  exemption?: ExemptionWindow | null;
 }): LedgerEntry[] {
   const byKey = new Map<string, SubscriptionRowLike[]>();
   for (const row of params.rows) {
@@ -164,7 +195,7 @@ export function buildLedger(params: {
     byKey.set(key, [...(byKey.get(key) ?? []), row]);
   }
 
-  return monthRange(params.start, params.current).map((ym) => {
+  const built = monthRange(params.start, params.current).map((ym) => {
     const key = ymKey(ym.year, ym.month);
     const rows = byKey.get(key) ?? [];
     const dueDate = dueDateFor(ym, params.dueDay);
@@ -182,7 +213,8 @@ export function buildLedger(params: {
         status: ledgerStatus({ amount, discount: 0, paid: 0, dueDate, waived: false, now: params.now }),
         dueDate,
         virtual: true,
-        refunded: false
+        refunded: false,
+        exempt: false
       };
     }
 
@@ -202,9 +234,12 @@ export function buildLedger(params: {
       status: ledgerStatus({ amount, discount, paid, dueDate, waived, now: params.now }),
       dueDate,
       virtual: false,
-      refunded: rows.some((r) => r.hadRefund)
+      refunded: rows.some((r) => r.hadRefund),
+      exempt: false
     };
   });
+
+  return params.exemption ? built.map((e) => applyExemption(e, params.exemption)) : built;
 }
 
 export function isOpen(entry: LedgerEntry): boolean {
@@ -222,7 +257,7 @@ export type PayCheck =
   | { ok: true; entry: LedgerEntry }
   | {
       ok: false;
-      reason: "NOT_IN_LEDGER" | "ALREADY_PAID" | "NO_PRICE" | "OUT_OF_ORDER";
+      reason: "NOT_IN_LEDGER" | "ALREADY_PAID" | "NO_PRICE" | "OUT_OF_ORDER" | "EXEMPT";
       oldest?: LedgerEntry;
     };
 
@@ -233,6 +268,7 @@ export type PayCheck =
 export function checkPayable(ledger: LedgerEntry[], target: YearMonth): PayCheck {
   const entry = ledger.find((e) => e.year === target.year && e.month === target.month);
   if (!entry) return { ok: false, reason: "NOT_IN_LEDGER" };
+  if (entry.exempt) return { ok: false, reason: "EXEMPT" };
   if (entry.status === "PAID" || entry.status === "WAIVED" || entry.remaining <= 0) {
     return { ok: false, reason: "ALREADY_PAID" };
   }

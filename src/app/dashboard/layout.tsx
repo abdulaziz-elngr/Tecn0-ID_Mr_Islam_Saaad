@@ -16,7 +16,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <Topbar />
         <main className="mx-auto w-full max-w-[1600px] flex-1 p-3 sm:p-4 md:p-6 print:max-w-none">
-          <div className="mb-4 empty:hidden"><OverdueNotices compact /></div>
+          <div className="no-print mb-4 empty:hidden"><OverdueNotices compact /></div>
           {children}
         </main>
       </div>

@@ -22,16 +22,25 @@ describe("three-role navigation", () => {
     }
   });
 
-  it("accountant only gets subscriptions / payments pages", () => {
+  it("accountant gets finance pages plus a read-only view of students and groups", () => {
     const has = hasFor("ACCOUNTANT");
     expect(canOpenPath("/dashboard", has)).toBe(true);
     expect(canOpenPath("/dashboard/finance/subscriptions", has)).toBe(true);
     expect(canOpenPath("/dashboard/finance/payments", has)).toBe(true);
     expect(canOpenPath("/dashboard/finance/records", has)).toBe(true);
     expect(canOpenPath("/dashboard/finance/invoices", has)).toBe(true);
+    // read-only lookups so students and groups are visible next to their payments
+    expect(canOpenPath("/dashboard/students", has)).toBe(true);
+    expect(canOpenPath("/dashboard/academic", has)).toBe(true);
+    expect(canOpenPath("/dashboard/academic/groups/abc", has)).toBe(true);
+    // ...but no write access to the academic structure
+    expect(has("academic.fees.manage")).toBe(true);
+    for (const k of ["students.update", "students.create", "students.delete", "academic.groups.manage"]) {
+      expect(has(k)).toBe(false);
+    }
     for (const p of [
-      "/dashboard/students",
-      "/dashboard/academic",
+      "/dashboard/academic/stages",
+      "/dashboard/academic/lesson-formation",
       "/dashboard/academic/sessions",
       "/dashboard/attendance/scan",
       "/dashboard/performance/exams",
@@ -43,7 +52,7 @@ describe("three-role navigation", () => {
     }
   });
 
-  it("teaching assistant gets attendance / recitation / homework / exams but no finance or admin", () => {
+  it("teaching assistant gets attendance / recitation / homework / exams / lesson formation but no finance or admin", () => {
     const has = hasFor("TEACHER_ASSISTANT");
     for (const p of [
       "/dashboard/attendance/scan",
@@ -51,7 +60,8 @@ describe("three-role navigation", () => {
       "/dashboard/performance/exams",
       "/dashboard/performance/recitation",
       "/dashboard/performance/assignments",
-      "/dashboard/performance/students"
+      "/dashboard/performance/students",
+      "/dashboard/academic/lesson-formation"
     ]) {
       expect(canOpenPath(p, has)).toBe(true);
     }
@@ -61,7 +71,6 @@ describe("three-role navigation", () => {
       "/dashboard/users",
       "/dashboard/settings",
       "/dashboard/teachers",
-      "/dashboard/academic/lesson-formation",
       "/dashboard/academic/stages"
     ]) {
       expect(canOpenPath(p, has)).toBe(false);

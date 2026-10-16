@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState, type FormEvent } from "react";
 import { useI18n } from "@/lib/i18n";
+import { usePermissions } from "@/components/PermissionsProvider";
 import { apiDelete, apiPatch, apiPost, useApi } from "@/lib/client";
 import { Badge, ConfirmDialog, ErrorNotice, Field, Modal, PageHeader, useToast } from "@/components/ui";
 
@@ -84,11 +85,21 @@ const NO_SUBJECT_KEY = "__none__";
 export default function GroupsPage() {
   const { t } = useI18n();
   const toast = useToast();
+  const { has, loaded } = usePermissions();
+  // Read-only viewers (e.g. the accountant) see the list but not the edit tools, and
+  // never trigger the subject / teacher lookups they are not allowed to call.
+  const canManage = has("academic.groups.manage");
   const { data: groups, loading, error, reload } = useApi<GroupRow[]>("/api/groups");
   const { data: stages } = useApi<StageOption[]>("/api/stages");
-  const { data: subjects, error: subjectsError } = useApi<SubjectOption[]>("/api/subjects");
-  const { data: teacherList } = useApi<StaffOption[]>("/api/teachers?pageSize=100&isAssistant=false");
-  const { data: assistantList } = useApi<StaffOption[]>("/api/teachers?pageSize=100&isAssistant=true");
+  const { data: subjects, error: subjectsError } = useApi<SubjectOption[]>(
+    loaded && canManage ? "/api/subjects" : null
+  );
+  const { data: teacherList } = useApi<StaffOption[]>(
+    loaded && canManage ? "/api/teachers?pageSize=100&isAssistant=false" : null
+  );
+  const { data: assistantList } = useApi<StaffOption[]>(
+    loaded && canManage ? "/api/teachers?pageSize=100&isAssistant=true" : null
+  );
 
   // Filters
   const [search, setSearch] = useState("");
@@ -281,9 +292,11 @@ export default function GroupsPage() {
       <PageHeader
         title={t("nav.groups")}
         actions={
-          <button type="button" className="btn-primary" onClick={openCreate}>
-            {t("groups.add")}
-          </button>
+          canManage ? (
+            <button type="button" className="btn-primary" onClick={openCreate}>
+              {t("groups.add")}
+            </button>
+          ) : undefined
         }
       />
 
@@ -435,6 +448,7 @@ export default function GroupsPage() {
                                 : t("groups.noSchedule")}
                             </p>
                           </Link>
+                          {canManage && (
                           <div className="mt-3 flex flex-wrap gap-3 border-t border-black/5 pt-2 text-xs dark:border-white/10">
                             <button type="button" className="hover:underline" onClick={() => openEdit(g)}>
                               {t("common.edit")}
@@ -450,6 +464,7 @@ export default function GroupsPage() {
                               {t("common.delete")}
                             </button>
                           </div>
+                          )}
                         </div>
                       ))}
                     </div>

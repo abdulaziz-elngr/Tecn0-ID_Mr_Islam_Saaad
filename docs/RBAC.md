@@ -7,9 +7,9 @@
 | `SUPER_ADMIN` | All organizations (platform operator) | Full access |
 | `CENTER_OWNER` | Org-wide within their organization | Full access within org |
 | `MANAGER` | Org-wide within their organization | Operational management, no `users.manage`/`roles.manage` |
-| `ACCOUNTANT` | Branch-scoped (assign every branch) | Subscriptions, payments, invoices and financial reports ONLY — no students/academic/attendance pages |
+| `ACCOUNTANT` | Branch-scoped (assign every branch) | Everything about money: subscriptions, payments, invoices, financial reports and the monthly price of each grade (`academic.fees.manage`). Read-only view of students, parents and groups (`students.view`, `parents.view`). No attendance / exams / teachers, and no edit rights on students or groups |
 | `TEACHER` | Branch-scoped | Own groups: students, attendance, exams/grades |
-| `TEACHER_ASSISTANT` | Branch-scoped + own groups only | Attendance, recitation, homework, exams/grades, student performance of the groups he is responsible for. Never finance, users or settings |
+| `TEACHER_ASSISTANT` | Branch-scoped + own groups only | Attendance, recitation, homework, exams/grades, student performance and lesson formation (`lessons.plan`) of the groups he is responsible for. Never finance, users or settings |
 | `RECEPTIONIST` | Branch-scoped | Student/parent intake |
 | `ATTENDANCE_OPERATOR` | Branch-scoped | QR scanning station |
 | `PARENT` | Own linked children only | No permission keys — access is enforced via a separate parent-portal scope, added in a later phase |
@@ -56,8 +56,8 @@ pattern used for `organizationId`/`branchId` elsewhere.
 | Who | Role | What they see |
 |---|---|---|
 | Center owner | `CENTER_OWNER` | Everything |
-| Accountant | `ACCOUNTANT` | Subscriptions + payments (all students, stages, groups) |
-| Teaching assistant | `TEACHER_ASSISTANT` | His own group(s): attendance, recitation, homework, exams, performance |
+| Accountant | `ACCOUNTANT` | All money screens + grade prices (all students, stages, groups); students/groups read-only |
+| Teaching assistant | `TEACHER_ASSISTANT` | His own group(s): attendance, recitation, homework, exams, performance, lesson formation |
 
 * **Own-group restriction** — `src/lib/group-access.ts` (`resolveOwnGroupIds`,
   `groupIdFilter`) is applied on the server to attendance, lessons, students,

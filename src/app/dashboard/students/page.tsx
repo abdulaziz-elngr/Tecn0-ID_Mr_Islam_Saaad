@@ -377,9 +377,11 @@ function StudentsPage() {
       <PageHeader
         title={t("students.title")}
         actions={
-          <button className="btn-primary" onClick={openCreate}>
-            {t("students.add")}
-          </button>
+          permissions.has("students.create") ? (
+            <button className="btn-primary" onClick={openCreate}>
+              {t("students.add")}
+            </button>
+          ) : undefined
         }
       />
 

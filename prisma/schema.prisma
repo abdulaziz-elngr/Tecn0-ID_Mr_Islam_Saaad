@@ -441,6 +441,19 @@ model Student {
   status            StudentStatus @default(ACTIVE)
   notes             String?
   emergencyContact  String?
+
+  // Monthly-fee exemption. While `feeExempt` is true the student owes nothing
+  // from `feeExemptFrom` (null = from the very first month) onwards. Removing
+  // the exemption never rewrites history: `feeExempt` flips to false and
+  // `feeExemptUntil` records the last exempt month, so months already waived
+  // stay waived and billing resumes from the month of removal.
+  feeExempt         Boolean   @default(false)
+  feeExemptFrom     DateTime?
+  feeExemptUntil    DateTime?
+  feeExemptReason   String?
+  feeExemptAt       DateTime?
+  feeExemptById     String?
+
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   deletedAt         DateTime? // soft delete only — never hard-delete a student with history
@@ -1002,6 +1015,9 @@ model Subscription {
   paidAmount     Decimal            @default(0) @db.Decimal(10, 2)
   dueDate        DateTime
   status         SubscriptionStatus @default(UNPAID)
+  /// True when this row was set to WAIVED by a student fee exemption (so that
+  /// removing the exemption can restore exactly those rows and no others).
+  exemptWaived   Boolean            @default(false)
   notes          String?
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt

@@ -1,4 +1,4 @@
-import { groupIdFilter, resolveOwnGroupIds } from "./group-access";
+import { assertGroupInScope, groupIdFilter, resolveOwnGroupIds } from "./group-access";
 import type { DayOfWeek, Prisma } from "@prisma/client";
 import { db } from "./db";
 import { BusinessRuleError, NotFoundError } from "./api";
@@ -48,6 +48,8 @@ export async function loadGroupForPlanning(ctx: AuthContext, groupId: string): P
   });
   if (!group) throw new NotFoundError("Group not found.");
   resolveBranchScope(ctx, group.branchId);
+  // A teacher / assistant may only form the lessons of the groups he is responsible for.
+  assertGroupInScope(await resolveOwnGroupIds(ctx), group.id);
 
   if (!group.isActive) {
     throw new BusinessRuleError("This group is inactive. Lessons cannot be formed for it.", {
@@ -404,6 +406,7 @@ export async function deletePlan(ctx: AuthContext, planId: string, ipAddress?: s
     }
   });
   if (!plan) throw new NotFoundError("Lesson plan not found.");
+  assertGroupInScope(await resolveOwnGroupIds(ctx), plan.groupId);
 
   const deletable = isPlanDeletable(
     plan.sessions.map((s) => ({ status: s.status as LessonStatus, attendanceCount: s._count.attendances }))

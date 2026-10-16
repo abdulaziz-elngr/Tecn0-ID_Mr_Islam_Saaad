@@ -87,6 +87,12 @@ export async function POST(request: NextRequest) {
                 details: { oldest: serializeEntry(check.oldest) }
               });
             }
+            if (check.reason === "EXEMPT") {
+              throw new BusinessRuleError("This student is exempt from monthly fees for this month. No payment is due.", {
+                status: 409,
+                code: "FEE_EXEMPT"
+              });
+            }
             if (check.reason === "ALREADY_PAID") {
               throw new BusinessRuleError("This month is already paid.", { status: 409, code: "ALREADY_PAID" });
             }

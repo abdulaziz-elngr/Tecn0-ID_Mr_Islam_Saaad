@@ -6,6 +6,7 @@ import {
   currentYearMonth,
   dayOfMonthIn,
   outstandingMonths,
+  type ExemptionWindow,
   type GradeFeeLike,
   type LedgerEntry,
   type SubscriptionRowLike,
@@ -51,7 +52,29 @@ export async function loadLedgerEnv(organizationId: string, now = new Date()): P
   };
 }
 
-type PrismaLike = Pick<typeof db, "subscription" | "gradeFee">;
+type PrismaLike = Pick<typeof db, "subscription" | "gradeFee" | "student">;
+
+/** First day (UTC) of a stored exemption boundary → year/month in the center's time zone. */
+function boundaryYm(date: Date | null, timeZone: string): YearMonth | null {
+  return date ? currentYearMonth(date, timeZone) : null;
+}
+
+/**
+ * The months a student owes nothing, from the Student exemption fields.
+ * Active exemption: open-ended. Removed exemption: only up to `feeExemptUntil`.
+ * Returns null when the student was never exempt (or the window is empty).
+ */
+export function exemptionWindowOf(
+  s: { feeExempt: boolean; feeExemptFrom: Date | null; feeExemptUntil: Date | null },
+  timeZone: string
+): ExemptionWindow | null {
+  const from = boundaryYm(s.feeExemptFrom, timeZone);
+  if (s.feeExempt) return { from, until: null };
+  const until = boundaryYm(s.feeExemptUntil, timeZone);
+  if (!until) return null;
+  if (from && from.year * 12 + from.month > until.year * 12 + until.month) return null;
+  return { from, until };
+}
 
 export async function loadLedgers(
   organizationId: string,
@@ -65,7 +88,7 @@ export async function loadLedgers(
   const ids = students.map((s) => s.id);
   const gradeIds = Array.from(new Set(students.map((s) => s.gradeId)));
 
-  const [rowsRaw, feesRaw] = await Promise.all([
+  const [rowsRaw, feesRaw, exemptRaw] = await Promise.all([
     client.subscription.findMany({
       where: { organizationId, studentId: { in: ids } },
       select: {
@@ -83,8 +106,18 @@ export async function loadLedgers(
     client.gradeFee.findMany({
       where: { organizationId, gradeId: { in: gradeIds } },
       select: { gradeId: true, amount: true, effectiveFrom: true }
+    }),
+    // Always read the exemption here (not from the caller) so EVERY screen that
+    // builds a ledger — payments, roster, dashboard, notices, attendance
+    // warning — applies it identically and can never disagree.
+    client.student.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, feeExempt: true, feeExemptFrom: true, feeExemptUntil: true }
     })
   ]);
+  const exemptionByStudent = new Map<string, ExemptionWindow | null>(
+    exemptRaw.map((e): [string, ExemptionWindow | null] => [e.id, exemptionWindowOf(e, env.timeZone)])
+  );
 
   const rowsByStudent = new Map<string, (SubscriptionRowLike & { studentId: string })[]>();
   for (const r of rowsRaw) {
@@ -128,7 +161,8 @@ export async function loadLedgers(
         rows,
         fees: feesByGrade.get(s.gradeId) ?? [],
         dueDay: env.dueDay,
-        now: env.now
+        now: env.now,
+        exemption: exemptionByStudent.get(s.id) ?? null
       })
     );
   }
@@ -160,6 +194,7 @@ export function serializeEntry(e: LedgerEntry) {
     status: e.status,
     dueDate: e.dueDate.toISOString(),
     virtual: e.virtual,
-    refunded: e.refunded
+    refunded: e.refunded,
+    exempt: e.exempt
   };
 }

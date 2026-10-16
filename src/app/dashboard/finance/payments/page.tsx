@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { printReceiptSilently } from "@/lib/print-receipt";
 import { useSearchParams } from "next/navigation";
 import { hasDictKey, useI18n } from "@/lib/i18n";
 import { ApiError, apiGet, apiPatch, apiPost, formatDateTime, formatMoneyClient, qs, useApi } from "@/lib/client";
@@ -141,6 +142,20 @@ function CollectTab({ locale }: { locale: "ar" | "en" }) {
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  // The barcode gun "types" into whatever has focus. If the cashier clicked somewhere
+  // else, the first scanned character puts the cursor back into the search box.
+  useEffect(() => {
+    if (selected) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+      const a = document.activeElement as HTMLElement | null;
+      if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      inputRef.current?.focus();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
   return (
     <>
       <PaymentFilters value={filters} onChange={(f) => { setFilters(f); setSubmitted(""); setQ(""); setExact(false); }} />
@@ -218,6 +233,21 @@ function StudentPaymentModal({
   const [formError, setFormError] = useState<string | null>(null);
   const [done, setDone] = useState<{ paymentId: string; receiptNumber: string } | null>(null);
   const [me, setMe] = useState<string>("");
+  const [autoPrint, setAutoPrint] = useState(true);
+  const submitting = useRef(false);
+  const readyAt = useRef<number | null>(null);
+  const lastCharAt = useRef(0);
+
+  useEffect(() => {
+    try { setAutoPrint(localStorage.getItem("tecnoid.autoPrintReceipt") !== "0"); } catch { /* storage blocked: keep default */ }
+  }, []);
+  function toggleAutoPrint(on: boolean) {
+    setAutoPrint(on);
+    try { localStorage.setItem("tecnoid.autoPrintReceipt", on ? "1" : "0"); } catch { /* ignore */ }
+  }
+  // The scanner box behind the dialog still has focus: release it so a stray Enter
+  // cannot re-run the search; keys then go to the window listener below.
+  useEffect(() => { (document.activeElement as HTMLElement | null)?.blur?.(); }, []);
 
   useEffect(() => {
     fetch("/api/auth/me").then((r) => r.json()).then((b) => setMe(b?.fullName ?? "")).catch(() => {});
@@ -259,8 +289,11 @@ function StudentPaymentModal({
     setAmount(""); setDiscount("");
   }
 
-  async function confirm() {
-    if (!chosen) return;
+  // quick = Enter key: no confirmation dialog, print the receipt and close so the next
+  // student can be scanned at once. The button keeps the confirmation step.
+  async function submitPayment(quick: boolean) {
+    if (!chosen || submitting.current) return;
+    submitting.current = true;
     setBusy(true); setFormError(null);
     try {
       const res = await apiPost<{ paymentId: string; receiptNumber: string }>("/api/payments/month", {
@@ -270,8 +303,10 @@ function StudentPaymentModal({
         notes: notes.trim() || undefined
       });
       setConfirmOpen(false);
+      toast.success(`${t("pay.recorded")} ${res.receiptNumber}`);
+      if (autoPrint) printReceiptSilently(res.paymentId);
+      if (quick) { onClose(); return; }
       setDone(res);
-      toast.success(t("pay.recorded"));
       reload();
     } catch (err) {
       setConfirmOpen(false);
@@ -285,8 +320,26 @@ function StudentPaymentModal({
       }
       const code = (err as { code?: string }).code;
       setFormError(code && hasDictKey(`err.${code}`) ? t(`err.${code}` as never) : err instanceof Error ? err.message : "Failed");
-    } finally { setBusy(false); }
+    } finally { submitting.current = false; setBusy(false); }
   }
+
+  const canQuickPay = Boolean(data?.canRecord && entry && canPayChosen && !done && payNum > 0 && payNum <= due);
+  useEffect(() => { readyAt.current = canQuickPay ? (readyAt.current ?? Date.now()) : null; }, [canQuickPay]);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key.length === 1) { lastCharAt.current = Date.now(); return; }
+      if (e.key !== "Enter" || e.repeat || e.isComposing) return;
+      if (!canQuickPay || busy || confirmOpen || submitting.current) return;
+      // Ignore the Enter that ends a barcode burst, and anything right after the form opened.
+      if (readyAt.current === null || Date.now() - readyAt.current < 500) return;
+      if (Date.now() - lastCharAt.current < 80) return;
+      if ((e.target as HTMLElement | null)?.closest("button, a, select, textarea")) return;
+      e.preventDefault();
+      void submitPayment(true);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const s = data?.student;
   const parent = s?.parents[0];
@@ -358,7 +411,7 @@ function StudentPaymentModal({
             <div className="space-y-2 rounded-lg bg-emerald-500/10 p-3 text-sm">
               <p className="font-semibold text-emerald-700 dark:text-emerald-300">{t("pay.recorded")} · {done.receiptNumber}</p>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="btn-primary" onClick={() => window.open(`/dashboard/finance/payments/${done.paymentId}?print=1`, "_blank")}>{t("pay.printReceipt")}</button>
+                <button type="button" className="btn-primary" onClick={() => printReceiptSilently(done.paymentId)}>{t("pay.printReceipt")}</button>
                 <button type="button" className="btn-secondary" onClick={onClose}>{t("pay.close")}</button>
               </div>
             </div>
@@ -378,7 +431,7 @@ function StudentPaymentModal({
                     </label>
                   )}
                   <label className="text-sm">{t("pay.amountPaid")}
-                    <input className="input mt-1" type="number" min={0.01} step="0.01" max={due} placeholder={String(due)} value={amount} disabled={!data.allowPartial} onChange={(e) => setAmount(e.target.value)} />
+                    <input className="input mt-1" type="number" min={0.01} step="0.01" max={due} value={amount === "" ? String(due) : amount} disabled={!data.allowPartial} onChange={(e) => setAmount(e.target.value)} />
                   </label>
                   <div><span className="text-black/60 dark:text-white/60">{t("pay.remainingAfter")}</span><div className="font-semibold">{fmtMoney(remainingAfter, data.currency)}</div></div>
                   <label className="text-sm">{t("pay.method")}
@@ -390,9 +443,14 @@ function StudentPaymentModal({
                 <label className="block text-sm">{t("pay.notes")}
                   <input className="input mt-1" value={notes} maxLength={500} onChange={(e) => setNotes(e.target.value)} />
                 </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={autoPrint} onChange={(e) => toggleAutoPrint(e.target.checked)} />
+                  {t("pay.autoPrint")}
+                </label>
                 <button type="button" className="btn-primary w-full" disabled={busy || payNum <= 0 || payNum > due} onClick={() => setConfirmOpen(true)}>
                   {t("pay.recordPayment")}
                 </button>
+                <p className="text-center text-xs text-black/50 dark:text-white/50">{t("pay.enterHint")}</p>
               </section>
             )
           )}
@@ -415,7 +473,7 @@ function StudentPaymentModal({
             confirmLabel={t("pay.confirmBtn")}
             busy={busy}
             onCancel={() => setConfirmOpen(false)}
-            onConfirm={() => void confirm()}
+            onConfirm={() => void submitPayment(false)}
           />
         </div>
       )}

@@ -20,12 +20,13 @@ export const ACCESS_RULES: readonly AccessRule[] = [
   { path: "/dashboard/teachers", any: ["teachers.view"] },
   { path: "/dashboard/employees", any: ["employees.view"] },
 
-  { path: "/dashboard/academic", exact: true, any: ["academic.groups.manage"] },
+  // Read-only for the accountant (payments.view); the page hides the edit buttons without academic.groups.manage.
+  { path: "/dashboard/academic", exact: true, any: ["academic.groups.manage", "payments.view"] },
   { path: "/dashboard/academic/stages", any: ["academic.stages.manage"] },
   { path: "/dashboard/academic/grades", any: ["academic.grades.manage"] },
   { path: "/dashboard/academic/subjects", any: ["academic.subjects.manage"] },
   { path: "/dashboard/academic/groups", any: ["academic.groups.manage", "students.view", "sessions.view"] },
-  { path: "/dashboard/academic/lesson-formation", any: ["sessions.create"] },
+  { path: "/dashboard/academic/lesson-formation", any: ["sessions.create", "lessons.plan"] },
   { path: "/dashboard/academic/sessions", any: ["sessions.view"] },
 
   { path: "/dashboard/attendance/scan", any: ["attendance.create"] },
