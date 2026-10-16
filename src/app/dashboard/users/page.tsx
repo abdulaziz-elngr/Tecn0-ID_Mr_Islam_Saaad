@@ -226,13 +226,13 @@ export default function UsersPage() {
     <div className="space-y-5">
       <PageHeader title={t("users.title")} />
 
-      <div className="flex gap-2 border-b border-black/10 dark:border-white/10">
+      <div className="no-scrollbar flex gap-2 overflow-x-auto border-b border-black/10 dark:border-white/10">
         {(["users", "roles", "sessions"] as const).map((tabKey) => (
           <button
             key={tabKey}
             type="button"
             onClick={() => setTab(tabKey)}
-            className={`px-3 py-2 text-sm font-medium ${
+            className={`shrink-0 whitespace-nowrap px-3 py-2 text-sm font-medium ${
               tab === tabKey
                 ? "border-b-2 border-tecno-gold text-tecno-gold-dark dark:text-tecno-gold"
                 : "text-black/55 dark:text-white/55"
@@ -304,7 +304,7 @@ export default function UsersPage() {
       )}
 
       {tab === "roles" && (
-        <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
+        <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
           <div className="card divide-y divide-black/5 dark:divide-white/5">
             {roles?.map((role) => (
               <button
@@ -411,7 +411,7 @@ export default function UsersPage() {
           <Field label="Full name" required>
             {(id) => <input id={id} className="input" value={uFullName} onChange={(e) => setUFullName(e.target.value)} required />}
           </Field>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Email">
               {(id) => <input id={id} type="email" className="input" value={uEmail} onChange={(e) => setUEmail(e.target.value)} />}
             </Field>

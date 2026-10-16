@@ -372,7 +372,7 @@ export default function ScannerPage() {
                   <p className="text-sm text-black/65 dark:text-white/65">
                     {formatTimeRange(selected.startMinutes, selected.endMinutes, locale)} · {selected._count.attendances} / {selected.group.capacity}
                   </p>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     {selected.status === "SCHEDULED" && (
                       <button type="button" className="btn-primary" disabled={lifecycleBusy} onClick={openSelected}>
                         {lifecycleBusy ? t("common.loading") : t("lesson.open")}
@@ -544,11 +544,11 @@ export default function ScannerPage() {
                   <span className="font-mono text-xs text-black/50 dark:text-white/50">{result.student?.studentCode}</span>
                 </p>
                 <dl className="mt-2 space-y-1 text-sm">
-                  <div className="flex justify-between">
+                  <div className="flex justify-between gap-2">
                     <dt className="text-black/55 dark:text-white/55">{t("scanner.currentGroup")}</dt>
                     <dd className="font-medium">{result.currentGroup?.name ?? "—"}</dd>
                   </div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between gap-2">
                     <dt className="text-black/55 dark:text-white/55">{t("scanner.selectedGroup")}</dt>
                     <dd className="font-medium">{result.selectedGroup?.name ?? "—"}</dd>
                   </div>

@@ -132,7 +132,7 @@ function RecitationBoard({ id, onBack }: { id: string; onBack: () => void }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-3 gap-3" aria-live="polite">
+      <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-3" aria-live="polite">
         <StatCard label={t("ex.totalStudents")} value={counts.total} />
         <StatCard label={t("ex.graded")} value={counts.graded} tone="positive" />
         <StatCard label={t("rc.pending")} value={counts.pending} tone={counts.pending > 0 ? "warning" : "default"} />
@@ -372,7 +372,7 @@ function RecitationInner() {
               if (lesson) setDate(lesson.date.slice(0, 10));
             }}
           />
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label={t("common.date")} required>
               {(id) => <input id={id} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />}
             </Field>
