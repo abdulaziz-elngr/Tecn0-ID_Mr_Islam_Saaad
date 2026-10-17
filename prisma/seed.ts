@@ -284,6 +284,7 @@ async function main() {
         subjectId: subject.id,
         teacherId: teacher.id,
         assistantId: def.name === "G3" ? assistant.id : undefined,
+        ...(def.name === "G3" ? { assistants: { create: [{ teacherId: assistant.id }] } } : {}),
         name: def.name,
         capacity: def.capacity,
       },

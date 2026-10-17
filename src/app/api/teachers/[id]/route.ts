@@ -20,6 +20,13 @@ const GROUP_BRIEF = {
   select: { id: true, name: true, grade: { select: { name: true } }, subject: { select: { id: true, name: true } } }
 } as const;
 
+/** Groups an ASSISTANT works in (many assistants may share one group). */
+const ASSISTANT_LINKS = {
+  where: { group: { deletedAt: null } },
+  orderBy: { group: { name: "asc" } },
+  select: { group: { select: { id: true, name: true, grade: { select: { name: true } }, subject: { select: { id: true, name: true } } } } }
+} as const;
+
 async function findScopedTeacher(organizationId: string, branchIds: string[] | undefined, id: string) {
   return db.teacher.findFirst({
     where: {
@@ -31,7 +38,7 @@ async function findScopedTeacher(organizationId: string, branchIds: string[] | u
     include: {
       branch: { select: { id: true, name: true } },
       groupsAsTeacher: GROUP_BRIEF,
-      groupsAsAssistant: GROUP_BRIEF
+      assistantLinks: ASSISTANT_LINKS
     }
   });
 }
@@ -39,7 +46,7 @@ async function findScopedTeacher(organizationId: string, branchIds: string[] | u
 type ScopedTeacher = NonNullable<Awaited<ReturnType<typeof findScopedTeacher>>>;
 
 function assignedGroupIds(teacher: ScopedTeacher): string[] {
-  return (teacher.isAssistant ? teacher.groupsAsAssistant : teacher.groupsAsTeacher).map((g) => g.id);
+  return (teacher.isAssistant ? teacher.assistantLinks.map((l) => l.group) : teacher.groupsAsTeacher).map((g) => g.id);
 }
 
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {

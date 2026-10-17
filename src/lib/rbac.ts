@@ -40,6 +40,9 @@ export class ForbiddenError extends Error {
 
 export const ORG_WIDE_ROLES: ReadonlySet<string> = new Set(["SUPER_ADMIN", "CENTER_OWNER"]);
 
+/** Logins that work with their own groups only; they never get the "no branch = all branches" fallback. */
+const TEACHING_ROLES: ReadonlySet<string> = new Set(["TEACHER", "TEACHER_ASSISTANT"]);
+
 export async function getAuthContext(): Promise<AuthContext | null> {
   const payload = await getSessionPayload();
   if (!payload) return null;
@@ -65,13 +68,26 @@ export async function getAuthContext(): Promise<AuthContext | null> {
 
   const isOrgWide = roleNames.some((r) => ORG_WIDE_ROLES.has(r));
 
+  let branchIds = user.userBranches.map((ub) => ub.branchId);
+  // The Users screen promises "leave the branch empty = every branch", so a staff login
+  // (accountant, manager, receptionist...) with NO branch assigned sees all branches of
+  // the organization — instead of an empty list everywhere. Teaching logins are the
+  // exception: they stay limited to what is explicitly assigned to them.
+  if (!isOrgWide && branchIds.length === 0 && !roleNames.some((r) => TEACHING_ROLES.has(r))) {
+    const all = await db.branch.findMany({
+      where: { deletedAt: null, center: { organizationId: user.organizationId } },
+      select: { id: true }
+    });
+    branchIds = all.map((b) => b.id);
+  }
+
   return {
     userId: user.id,
     organizationId: user.organizationId,
     fullName: user.fullName,
     permissions,
     roleNames,
-    branchIds: user.userBranches.map((ub) => ub.branchId),
+    branchIds,
     isOrgWide
   };
 }

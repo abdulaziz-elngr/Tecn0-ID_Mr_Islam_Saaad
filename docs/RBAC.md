@@ -9,7 +9,7 @@
 | `MANAGER` | Org-wide within their organization | Operational management, no `users.manage`/`roles.manage` |
 | `ACCOUNTANT` | Branch-scoped (assign every branch) | Everything about money: subscriptions, payments, invoices, financial reports and the monthly price of each grade (`academic.fees.manage`). Read-only view of students, parents and groups (`students.view`, `parents.view`). No attendance / exams / teachers, and no edit rights on students or groups |
 | `TEACHER` | Branch-scoped | Own groups: students, attendance, exams/grades |
-| `TEACHER_ASSISTANT` | Branch-scoped + own groups only | Attendance, recitation, homework, exams/grades, student performance and lesson formation (`lessons.plan`) of the groups he is responsible for. Never finance, users or settings |
+| `TEACHER_ASSISTANT` | Branch-scoped + own groups only | Attendance, recitation, homework, exams/grades, student performance and lesson formation (`lessons.plan`) of the groups he is responsible for (several assistants can share one group; each group lists all of them). Never finance, users or settings |
 | `RECEPTIONIST` | Branch-scoped | Student/parent intake |
 | `ATTENDANCE_OPERATOR` | Branch-scoped | QR scanning station |
 | `PARENT` | Own linked children only | No permission keys — access is enforced via a separate parent-portal scope, added in a later phase |

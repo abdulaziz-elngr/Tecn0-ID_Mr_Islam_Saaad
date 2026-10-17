@@ -328,6 +328,8 @@ model Group {
   subject   Subject? @relation(fields: [subjectId], references: [id])
   teacher   Teacher? @relation("GroupTeacher", fields: [teacherId], references: [id])
   assistant Teacher? @relation("GroupAssistant", fields: [assistantId], references: [id])
+  // ALL assistants of the group (many per group). `assistantId` above mirrors the first one.
+  assistants GroupAssistant[]
 
   students    Student[]
   schedules   Schedule[]
@@ -386,6 +388,21 @@ model Schedule {
 // distinguishes the two for UI/reporting; access control itself is
 // still driven by the linked User's Role (TEACHER vs TEACHER_ASSISTANT),
 // not by this flag — this flag is descriptive, not a security boundary.
+/// Many assistants per group. `Group.assistantId` is kept as a mirror of the first
+/// one (sessions / schedule conflicts still read it); this table is the source of truth.
+model GroupAssistant {
+  id        String   @id @default(uuid())
+  groupId   String
+  teacherId String
+  createdAt DateTime @default(now())
+
+  group   Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  teacher Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, teacherId])
+  @@index([teacherId])
+}
+
 model Teacher {
   id             String   @id @default(uuid())
   organizationId String
@@ -405,6 +422,7 @@ model Teacher {
   user            User?   @relation(fields: [userId], references: [id])
   groupsAsTeacher   Group[] @relation("GroupTeacher")
   groupsAsAssistant Group[] @relation("GroupAssistant")
+  assistantLinks    GroupAssistant[]
   teacherSubjects   TeacherSubject[]
 
   @@index([organizationId])

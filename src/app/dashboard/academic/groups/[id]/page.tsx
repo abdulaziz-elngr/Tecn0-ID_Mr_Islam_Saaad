@@ -30,6 +30,7 @@ interface GroupDetail {
   subject: { id: string; name: string; code: string | null } | null;
   teacher: { id: string; fullName: string } | null;
   assistant: { id: string; fullName: string } | null;
+  assistants?: { id: string; fullName: string }[];
   schedules: { id: string; dayOfWeek: string; startMinutes: number; endMinutes: number; isActive: boolean }[];
   currentCount: number;
   remaining: number;
@@ -313,10 +314,16 @@ export default function GroupDetailPage() {
         <div className="card p-4">
           <p className="text-xs text-black/50 dark:text-white/50">{t("groups.teacher")}</p>
           <p className="font-medium">{group.teacher?.fullName ?? "—"}</p>
-          {group.assistant && (
+          {(group.assistants?.length ?? 0) > 0 ? (
             <p className="mt-1 text-xs text-black/60 dark:text-white/60">
-              {t("groups.assistant")}: {group.assistant.fullName}
+              {t("groups.assistant")}: {group.assistants!.map((a) => a.fullName).join("، ")}
             </p>
+          ) : (
+            group.assistant && (
+              <p className="mt-1 text-xs text-black/60 dark:text-white/60">
+                {t("groups.assistant")}: {group.assistant.fullName}
+              </p>
+            )
           )}
         </div>
         <div className="card p-4">

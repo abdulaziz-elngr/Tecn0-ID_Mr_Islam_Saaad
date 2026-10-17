@@ -40,6 +40,8 @@ interface GroupRow {
   subject: { id: string; name: string; code: string | null } | null;
   teacher: StaffOption | null;
   assistant: StaffOption | null;
+  /** Every assistant of the group (several may share one group). */
+  assistants?: StaffOption[];
   schedules: { dayOfWeek: string; startMinutes: number; endMinutes: number }[];
 }
 
@@ -50,7 +52,7 @@ interface FormState {
   name: string;
   capacity: number;
   teacherId: string;
-  assistantId: string;
+  assistantIds: string[];
   notes: string;
 }
 
@@ -61,7 +63,7 @@ const EMPTY_FORM: FormState = {
   name: "",
   capacity: 20,
   teacherId: "",
-  assistantId: "",
+  assistantIds: [],
   notes: ""
 };
 
@@ -147,7 +149,7 @@ export default function GroupsPage() {
       if (fSubject && g.subject?.id !== fSubject) return false;
       if (fTeacher && g.teacher?.id !== fTeacher) return false;
       if (q) {
-        const haystack = [g.name, g.subject?.name, g.subject?.code, g.teacher?.fullName, g.assistant?.fullName]
+        const haystack = [g.name, g.subject?.name, g.subject?.code, g.teacher?.fullName, ...(g.assistants ?? []).map((a) => a.fullName)]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
@@ -198,7 +200,7 @@ export default function GroupsPage() {
       name: g.name,
       capacity: g.capacity,
       teacherId: g.teacher?.id ?? "",
-      assistantId: g.assistant?.id ?? "",
+      assistantIds: (g.assistants ?? (g.assistant ? [g.assistant] : [])).map((a) => a.id),
       notes: g.notes ?? ""
     });
     setFormError(null);
@@ -221,7 +223,7 @@ export default function GroupsPage() {
           capacity: form.capacity,
           subjectId: form.subjectId,
           teacherId: form.teacherId || null,
-          assistantId: form.assistantId || null,
+          assistantIds: form.assistantIds,
           notes: form.notes.trim()
         });
         toast.success(t("common.saved"));
@@ -238,7 +240,7 @@ export default function GroupsPage() {
           name: form.name.trim(),
           capacity: form.capacity,
           teacherId: form.teacherId || undefined,
-          assistantId: form.assistantId || undefined,
+          assistantIds: form.assistantIds,
           notes: form.notes.trim() || undefined
         });
         toast.success(t("common.created"));
@@ -578,20 +580,26 @@ export default function GroupsPage() {
             )}
           </Field>
           <Field label={t("groups.assistant")}>
-            {(id) => (
-              <select
-                id={id}
-                className="input"
-                value={form.assistantId}
-                onChange={(e) => setField("assistantId", e.target.value)}
-              >
-                <option value="">—</option>
+            {() => (
+              // Several assistants can share one group: tick every one that works in it.
+              <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-black/10 p-2 dark:border-white/10">
+                {(assistantList ?? []).length === 0 && <p className="text-xs text-black/50 dark:text-white/50">—</p>}
                 {(assistantList ?? []).map((x) => (
-                  <option key={x.id} value={x.id}>
+                  <label key={x.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={form.assistantIds.includes(x.id)}
+                      onChange={(e) =>
+                        setField(
+                          "assistantIds",
+                          e.target.checked ? [...form.assistantIds, x.id] : form.assistantIds.filter((i) => i !== x.id)
+                        )
+                      }
+                    />
                     {x.fullName}
-                  </option>
+                  </label>
                 ))}
-              </select>
+              </div>
             )}
           </Field>
           <Field label={t("common.notes")}>
