@@ -221,6 +221,21 @@ export default function ScannerPage() {
     if (isOpen && mode === "SCAN") refocus();
   }, [refocus, sessionId, isOpen, mode]);
 
+  // Scanner guns just "type". If focus drifted anywhere that is not a text field
+  // (a button, the page body), send the keystroke to the scan box instead.
+  useEffect(() => {
+    if (!isOpen || mode !== "SCAN" || cameraOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable) return;
+      if (e.key.length === 1 || e.key === "Enter") inputRef.current?.focus();
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [isOpen, mode, cameraOpen]);
+
   async function runScan(scanCode: string, confirmMakeUp: boolean) {
     setBusy(true);
     setScanError(null);
@@ -276,6 +291,12 @@ export default function ScannerPage() {
 
   const accepted = result?.status === "ACCEPTED";
   const needsConfirmation = result?.status === "NEEDS_CONFIRMATION";
+
+  // After a scan finishes (or a make-up prompt is answered) the box is editable again:
+  // give it focus right away so the next barcode lands in it with no click.
+  useEffect(() => {
+    if (isOpen && mode === "SCAN" && !busy && !needsConfirmation) refocus();
+  }, [busy, needsConfirmation]); // eslint-disable-line react-hooks/exhaustive-deps
   const codeText = (c: string, fallback: string) => {
     const key = `scanner.code.${c}`;
     return hasDictKey(key) ? t(key as Parameters<typeof t>[0]) : fallback;
@@ -426,7 +447,9 @@ export default function ScannerPage() {
                       autoComplete="off"
                       autoFocus
                       inputMode="text"
-                      disabled={busy || needsConfirmation}
+                      // readOnly (NOT disabled): a disabled input drops focus, which forced the
+                      // operator to click the box again after every scan.
+                      readOnly={busy || needsConfirmation}
                       onChange={(e) => setCode(e.target.value)}
                       onBlur={() => {
                         if (!cameraOpen) setTimeout(refocus, 80);
