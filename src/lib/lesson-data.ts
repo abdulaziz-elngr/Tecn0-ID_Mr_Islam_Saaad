@@ -23,6 +23,7 @@ import { paymentWarningFor, type PaymentWarning } from "./payment-warning";
 import { exemptionWindowOf } from "./payment-ledger";
 import { inExemption } from "./subscription-months";
 import { DEFAULT_TIME_ZONE, sessionStartInstant } from "./tz";
+import { TtlCache } from "./ttl-cache";
 
 /**
  * Database-backed operations of the Stage 2 lesson system. The decisions
@@ -38,12 +39,16 @@ function canSeeFees(ctx: AuthContext): boolean {
   return ctx.permissions.has("subscriptions.view") || ctx.permissions.has("payments.view");
 }
 
+const timeZoneCache = new TtlCache<string>(10 * 60 * 1000, 200);
+
 export async function getCenterTimeZone(branchId: string): Promise<string> {
-  const branch = await db.branch.findUnique({
-    where: { id: branchId },
-    select: { center: { select: { timezone: true } } }
+  return timeZoneCache.wrap(branchId, async () => {
+    const branch = await db.branch.findUnique({
+      where: { id: branchId },
+      select: { center: { select: { timezone: true } } }
+    });
+    return branch?.center.timezone || DEFAULT_TIME_ZONE;
   });
-  return branch?.center.timezone || DEFAULT_TIME_ZONE;
 }
 
 /** Loads a session inside the caller's organization/branch scope, or throws NotFoundError. */
@@ -271,7 +276,7 @@ export async function buildStudentSnapshot(
 /** Same as buildStudentSnapshot but reuses already-loaded (and already scope-checked) rows — used by the scan route. */
 export async function snapshotFor(
   ctx: AuthContext,
-  session: { id: string; groupId: string; date: Date; lessonNumber: number | null },
+  session: { id: string; groupId: string; date: Date; lessonNumber: number | null; group?: { subjectId?: string | null } },
   student: {
     id: string;
     fullName: string;
@@ -279,17 +284,20 @@ export async function snapshotFor(
     status: string;
     groupId: string;
     group: { id: string; name: string } | null;
+    /** Optional: when the caller already loaded them, the payment warning skips one student query. */
+    gradeId?: string;
+    enrollmentDate?: Date;
   }
 ): Promise<StudentLessonSnapshot> {
   const canRecitation = ctx.permissions.has("recitation.view");
   const canExam = ctx.permissions.has("exams.view");
   const canFees = canSeeFees(ctx);
 
-  const lessonGroup = await db.group.findUnique({
-    where: { id: session.groupId },
-    select: { subjectId: true }
-  });
-  const subjectId = lessonGroup?.subjectId ?? null;
+  // The scan route already loaded the group; only fall back to a query when it did not.
+  const subjectId =
+    session.group?.subjectId !== undefined
+      ? session.group.subjectId
+      : ((await db.group.findUnique({ where: { id: session.groupId }, select: { subjectId: true } }))?.subjectId ?? null);
   const periodYear = session.date.getUTCFullYear();
   const periodMonth = session.date.getUTCMonth() + 1;
 
@@ -342,7 +350,13 @@ export async function snapshotFor(
         })
       : Promise.resolve([]),
     getAnalyticsThresholds(ctx.organizationId),
-    paymentWarningFor(ctx.organizationId, student.id).catch((err) => {
+    paymentWarningFor(
+      ctx.organizationId,
+      student.id,
+      student.gradeId && student.enrollmentDate
+        ? { id: student.id, gradeId: student.gradeId, enrollmentDate: student.enrollmentDate }
+        : undefined
+    ).catch((err) => {
       console.error("[snapshot] payment warning failed", err);
       return null;
     }),

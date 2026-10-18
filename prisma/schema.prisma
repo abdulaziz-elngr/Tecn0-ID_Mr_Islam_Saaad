@@ -497,6 +497,7 @@ model Student {
   @@index([branchId])
   @@index([studentCode])
   @@index([fullName])
+  @@index([organizationId, deletedAt])
   @@index([stageId])
   @@index([gradeId])
   @@index([groupId])
@@ -746,6 +747,8 @@ model Attendance {
   @@index([studentId])
   @@index([groupId])
   @@index([recordedAt])
+  @@index([studentId, deletedAt])
+  @@index([sessionId, deletedAt])
 }
 
 /// Immutable trail of every change made to an attendance record
@@ -1051,6 +1054,7 @@ model Subscription {
   @@index([branchId])
   @@index([status])
   @@index([periodYear, periodMonth])
+  @@index([studentId])
 }
 
 enum PaymentMethod {

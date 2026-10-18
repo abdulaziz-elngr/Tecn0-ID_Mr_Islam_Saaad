@@ -185,7 +185,7 @@ export default function ScannerPage() {
     }
     const controller = new AbortController();
     const timeout = setTimeout(() => {
-      fetch(`/api/search?q=${encodeURIComponent(term)}`, { signal: controller.signal })
+      fetch(`/api/search?q=${encodeURIComponent(term)}&scope=students&limit=8`, { signal: controller.signal })
         .then((r) => r.json())
         .then((body) => setManualResults(body.data?.students ?? []))
         .catch(() => {});

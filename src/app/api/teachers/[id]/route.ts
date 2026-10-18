@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requirePermission } from "@/lib/rbac";
+import { clearAuthContextCache, requirePermission } from "@/lib/rbac";
 import { BusinessRuleError, NotFoundError, handleApiError, ok, readJson } from "@/lib/api";
 import { writeAuditLog } from "@/lib/audit";
 import { assertCanManageUser } from "@/lib/scope";
@@ -126,6 +126,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       }
     });
 
+    clearAuthContextCache(); // permissions/roles/branches changed — drop the cached auth context
     return ok({ ...updated, groupIds: afterGroupIds });
   } catch (err) {
     return handleApiError(SCOPE, err);
@@ -212,6 +213,7 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
       reason: reason.data.reason
     });
 
+    clearAuthContextCache(); // permissions/roles/branches changed — drop the cached auth context
     return ok({
       id: existing.id,
       deleted: true,

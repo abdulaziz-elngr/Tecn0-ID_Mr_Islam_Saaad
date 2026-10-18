@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { getSessionPayload } from "./session";
+import { TtlCache } from "./ttl-cache";
 
 /**
  * RBAC + scope resolution.
@@ -43,12 +44,34 @@ export const ORG_WIDE_ROLES: ReadonlySet<string> = new Set(["SUPER_ADMIN", "CENT
 /** Logins that work with their own groups only; they never get the "no branch = all branches" fallback. */
 const TEACHING_ROLES: ReadonlySet<string> = new Set(["TEACHER", "TEACHER_ASSISTANT"]);
 
+/**
+ * Building the context walks user → roles → permissions (a deep join) and, for
+ * staff, the branch list: several queries on EVERY API call. Cache the result
+ * briefly; role/permission edits show up within AUTH_CACHE_MS. Call
+ * `clearAuthContextCache()` after changing users, roles or permissions to apply
+ * them immediately.
+ */
+const AUTH_CACHE_MS = 20 * 1000;
+const authContextCache = new TtlCache<AuthContext>(AUTH_CACHE_MS, 500);
+
+export function clearAuthContextCache(): void {
+  authContextCache.clear();
+}
+
 export async function getAuthContext(): Promise<AuthContext | null> {
   const payload = await getSessionPayload();
   if (!payload) return null;
 
+  const cached = authContextCache.get(payload.sub);
+  if (cached) return cached;
+  const fresh = await loadAuthContext(payload.sub);
+  if (fresh) authContextCache.set(payload.sub, fresh);
+  return fresh;
+}
+
+async function loadAuthContext(userId: string): Promise<AuthContext | null> {
   const user = await db.user.findUnique({
-    where: { id: payload.sub },
+    where: { id: userId },
     include: {
       userRoles: { include: { role: { include: { rolePermissions: { include: { permission: true } } } } } },
       userBranches: true

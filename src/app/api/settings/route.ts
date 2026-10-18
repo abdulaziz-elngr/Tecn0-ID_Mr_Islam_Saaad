@@ -11,7 +11,8 @@ import {
   getLateThresholdMinutes,
   getMakeUpRules,
   getPaymentRules,
-  setSetting
+  setSetting,
+  clearSettingsCache
 } from "@/lib/settings";
 import { handleApiError, ok, readJson } from "@/lib/api";
 
@@ -99,6 +100,7 @@ export async function PATCH(request: NextRequest) {
       });
       if (center) {
         await db.center.update({ where: { id: center.id }, data: input.center });
+        clearSettingsCache();
       }
     }
 

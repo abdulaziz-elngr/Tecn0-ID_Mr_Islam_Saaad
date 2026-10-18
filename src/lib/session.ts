@@ -2,6 +2,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { createHash, randomBytes } from "crypto";
 import { db } from "./db";
+import { TtlCache } from "./ttl-cache";
 
 /**
  * Session strategy: a signed, HTTP-only, SameSite=lax cookie holding a
@@ -26,6 +27,16 @@ const IDLE_DAYS = Number(process.env.SESSION_IDLE_DAYS || 90);
 const COOKIE_DAYS = Math.max(Number(process.env.SESSION_COOKIE_DAYS || 365), IDLE_DAYS);
 /** Don't hit the DB to extend the window more often than this. */
 const TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * The session row is checked on every request. Cache it for a few seconds so a
+ * burst of calls (scanner, search-as-you-type) costs one DB read, not one per call.
+ * Logout / revoke clear the entry, so revocation is immediate on this instance and
+ * at most SESSION_CACHE_MS late on any other.
+ */
+const SESSION_CACHE_MS = 15 * 1000;
+type SessionRow = NonNullable<Awaited<ReturnType<typeof db.session.findUnique>>>;
+const sessionRowCache = new TtlCache<SessionRow>(SESSION_CACHE_MS, 2000);
 
 function getSecretKey() {
   const secret = process.env.AUTH_SECRET;
@@ -100,19 +111,24 @@ export async function getSessionPayload(): Promise<SessionPayload | null> {
     const parsed = payload as unknown as SessionPayload;
 
     // Verify the backing session row is still valid (not revoked/expired).
-    const session = await db.session.findUnique({ where: { id: parsed.sid } });
+    const session =
+      sessionRowCache.get(parsed.sid) ??
+      (await db.session.findUnique({ where: { id: parsed.sid } }));
     if (!session || session.revokedAt || session.expiresAt < new Date()) {
+      sessionRowCache.delete(parsed.sid);
       return null;
     }
+    sessionRowCache.set(parsed.sid, session);
 
     // Sliding window: record activity and push the expiry forward. Throttled
     // so a burst of API calls doesn't turn into a burst of DB writes.
     const now = new Date();
     if (now.getTime() - session.lastSeenAt.getTime() > TOUCH_INTERVAL_MS) {
-      await db.session.update({
+      const touched = await db.session.update({
         where: { id: session.id },
         data: { lastSeenAt: now, expiresAt: new Date(now.getTime() + IDLE_DAYS * DAY_MS) }
       });
+      sessionRowCache.set(session.id, touched);
     }
 
     return parsed;
@@ -124,6 +140,7 @@ export async function getSessionPayload(): Promise<SessionPayload | null> {
 export async function destroySession(): Promise<void> {
   const payload = await getSessionPayload();
   if (payload) {
+    sessionRowCache.delete(payload.sid);
     await db.session.update({
       where: { id: payload.sid },
       data: { revokedAt: new Date() }
@@ -133,6 +150,7 @@ export async function destroySession(): Promise<void> {
 }
 
 export async function revokeAllSessionsForUser(userId: string): Promise<void> {
+  sessionRowCache.clear();
   await db.session.updateMany({
     where: { userId, revokedAt: null },
     data: { revokedAt: new Date() }

@@ -2,7 +2,7 @@ import { type NextRequest } from "next/server";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { requirePermission } from "@/lib/rbac";
+import { clearAuthContextCache, requirePermission } from "@/lib/rbac";
 import { writeAuditLog } from "@/lib/audit";
 import { assertCanAssign, assertCanManageUser } from "@/lib/scope";
 import { hashPassword, isPasswordStrongEnough } from "@/lib/password";
@@ -190,6 +190,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       reason: input.reason
     });
 
+    clearAuthContextCache(); // permissions/roles/branches changed — drop the cached auth context
     return ok(after);
   } catch (err) {
     return handleApiError(SCOPE, err);
@@ -224,6 +225,7 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
       reason
     });
 
+    clearAuthContextCache(); // permissions/roles/branches changed — drop the cached auth context
     return ok({ id: user.id, deleted: true });
   } catch (err) {
     return handleApiError(SCOPE, err);
