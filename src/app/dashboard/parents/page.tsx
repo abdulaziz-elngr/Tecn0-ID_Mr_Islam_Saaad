@@ -347,7 +347,7 @@ export default function ParentPortalPage() {
                 autoComplete="off"
                 required
                 className="input"
-                placeholder="مثال: 260001"
+                placeholder="مثال: 270001"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
               />
