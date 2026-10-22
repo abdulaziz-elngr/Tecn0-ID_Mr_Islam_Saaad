@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { PERFORMANCE_AR, PERFORMANCE_EN } from "./i18n-performance";
+import { TREASURY_AR, TREASURY_EN } from "./i18n-treasury";
 
 export type Locale = "ar" | "en";
 
@@ -19,6 +20,7 @@ const DIRECTIONS: Record<Locale, "rtl" | "ltr"> = {
 const DICTIONARIES = {
   ar: {
     ...PERFORMANCE_AR,
+    ...TREASURY_AR,
     "app.name": "تكنو آي دي",
     "app.tagline": "نظام إدارة المراكز التعليمية",
     "nav.dashboard": "لوحة التحكم",
@@ -653,6 +655,7 @@ const DICTIONARIES = {
   },
   en: {
     ...PERFORMANCE_EN,
+    ...TREASURY_EN,
     "app.name": "TecnoID",
     "app.tagline": "Educational Center Management Platform",
     "nav.dashboard": "Dashboard",

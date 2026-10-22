@@ -8,6 +8,7 @@ import { toDateOnly } from "@/lib/sessions";
 import { round2 } from "@/lib/billing";
 import { loadLedgerEnv, loadLedgers } from "@/lib/payment-ledger";
 import { outstandingMonths } from "@/lib/subscription-months";
+import { treasurySummary } from "@/lib/treasury";
 
 /** These routes build a ledger for every student; give them room on serverless. */
 export const maxDuration = 30;
@@ -191,6 +192,13 @@ export async function GET(request: NextRequest) {
         todayPaymentsCount: todayPayments._count._all,
         todayPaymentsAmount: round2(Number(todayPayments._sum.amount ?? 0))
       };
+
+      // Treasury = tuition + book income - deductions ("خصم مبلغ"). Same maths as the treasury page.
+      response.treasury = await treasurySummary(
+        { organizationId: ctx.organizationId, branchIds },
+        today.getUTCFullYear(),
+        today.getUTCMonth() + 1
+      );
 
       const trendStart = new Date(
         Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - (query.trendMonths - 1), 1)

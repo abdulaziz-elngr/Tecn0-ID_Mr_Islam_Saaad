@@ -15,6 +15,7 @@ import {
   type Filters
 } from "@/components/payments/shared";
 import { paidMessage, unpaidMessage } from "@/lib/subscription-months";
+import { TreasuryStrip } from "@/components/payments/TreasuryStrip";
 
 interface Row {
   studentId: string;
@@ -66,6 +67,7 @@ export default function PaymentRecordsPage() {
       <PageHeader title={t("rec.title")} />
       <PaymentFilters value={f} onChange={setF} />
       <ErrorNotice message={error ?? actionError} />
+      <TreasuryStrip year={f.year} month={f.month} />
 
       {data && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

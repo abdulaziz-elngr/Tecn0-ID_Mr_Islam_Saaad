@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
     const to = new Date(`${query.to}T23:59:59.999Z`);
     const branchFilter = branchIds ? { in: branchIds } : undefined;
 
-    const [payments, billed, waivedBilled] = await Promise.all([
+    const [payments, billed, waivedBilled, bookSum, deductionSum] = await Promise.all([
       db.payment.findMany({
         where: {
           organizationId: ctx.organizationId,
@@ -68,6 +68,25 @@ export async function GET(request: NextRequest) {
           ...(branchFilter ? { branchId: branchFilter } : {})
         },
         _sum: { paidAmount: true }
+      }),
+      // Book / notes income and treasury deductions ("خصم مبلغ") in the same period.
+      db.bookPayment.aggregate({
+        where: {
+          organizationId: ctx.organizationId,
+          status: "COMPLETED",
+          paidAt: { gte: from, lte: to },
+          ...(branchFilter ? { branchId: branchFilter } : {})
+        },
+        _sum: { amount: true }
+      }),
+      db.treasuryDeduction.aggregate({
+        where: {
+          organizationId: ctx.organizationId,
+          status: "ACTIVE",
+          spentAt: { gte: from, lte: to },
+          ...(branchFilter ? { branchId: branchFilter } : {})
+        },
+        _sum: { amount: true }
       })
     ]);
     const waivedPaid = Number(waivedBilled._sum.paidAmount ?? 0);
@@ -75,6 +94,8 @@ export async function GET(request: NextRequest) {
     const revenue = round2(
       payments.reduce((sum, p) => sum + Number(p.amount) - Number(p.refundedAmount), 0)
     );
+    const bookRevenue = round2(Number(bookSum._sum.amount ?? 0));
+    const deductions = round2(Number(deductionSum._sum.amount ?? 0));
     const billedTotal = round2(
       Number(billed._sum.amount ?? 0) - Number(billed._sum.discount ?? 0) + waivedPaid
     );
@@ -153,6 +174,9 @@ export async function GET(request: NextRequest) {
       range: { from: query.from, to: query.to },
       summary: {
         revenue,
+        bookRevenue,
+        deductions,
+        net: round2(revenue + bookRevenue - deductions),
         billed: billedTotal,
         collected: collectedTotal,
         outstanding: round2(billedTotal - collectedTotal),

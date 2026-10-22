@@ -6,6 +6,7 @@ import { printReceiptSilently } from "@/lib/print-receipt";
 import { useSearchParams } from "next/navigation";
 import { hasDictKey, useI18n } from "@/lib/i18n";
 import { ApiError, apiGet, apiPatch, apiPost, formatDateTime, formatMoneyClient, qs, useApi } from "@/lib/client";
+import { TreasuryStrip } from "@/components/payments/TreasuryStrip";
 import { Badge, ConfirmDialog, DataTable, ErrorNotice, Modal, PageHeader, Pager, StatCard, useToast } from "@/components/ui";
 import {
   PaymentFilters,
@@ -527,6 +528,7 @@ function TransactionsTab() {
     <>
       <ErrorNotice message={error ?? err} />
       {data && <StatCard label={t("pay.collected")} value={formatMoneyClient(data.totals.collected)} tone="positive" />}
+      <TreasuryStrip />
       <DataTable
         columns={[t("pay.txReceipt"), t("common.student"), t("common.amount"), t("pay.method"), t("common.date"), t("pay.txStatus"), t("common.actions")]}
         loading={loading}

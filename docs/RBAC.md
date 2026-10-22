@@ -73,3 +73,9 @@ pattern used for `organizationId`/`branchId` elsewhere.
   enforces every permission.
 * **Existing databases** — run `prisma/sql/2026-10-three-role-system.sql` once to
   align the permission keys of the two roles.
+
+## Deductions and book reservations (Oct 2026)
+
+New permissions: `deductions.view|create|void` and `books.view|create|update|collect|void`.
+Granted to SUPER_ADMIN, CENTER_OWNER, MANAGER and ACCOUNTANT; RECEPTIONIST gets `books.view` + `books.collect`.
+Existing databases: run `prisma/sql/2026-10-deductions-books.sql` (schema + permissions + grants, idempotent).

@@ -41,6 +41,10 @@ export const PERMISSIONS = {
     "invoices.view",
     "invoices.void"
   ],
+  // "خصم مبلغ": money taken out of the treasury. Totals everywhere are computed from ACTIVE rows.
+  deductions: ["deductions.view", "deductions.create", "deductions.void"],
+  // حجوزات الكتب والمذكرات
+  books: ["books.view", "books.create", "books.update", "books.collect", "books.void"],
   exams: [
     "exams.view",
     "exams.create",
@@ -95,6 +99,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     ...PERMISSIONS.sessions,
     ...PERMISSIONS.attendance,
     ...PERMISSIONS.payments,
+    ...PERMISSIONS.deductions,
+    ...PERMISSIONS.books,
     ...PERMISSIONS.exams,
     ...PERMISSIONS.performance,
     ...PERMISSIONS.communication,
@@ -109,6 +115,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
   // delete, no academic.groups.manage). No attendance, exams or teacher access.
   ACCOUNTANT: [
     ...PERMISSIONS.payments,
+    ...PERMISSIONS.deductions,
+    ...PERMISSIONS.books,
     "academic.fees.manage",
     "students.view",
     "parents.view",
@@ -172,7 +180,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     "payments.reprint",
     "subscriptions.view",
     "invoices.view",
-    "notifications.view"
+    "notifications.view",
+    // Books: can look at reservations and collect money, never create/void.
+    "books.view",
+    "books.collect"
   ],
   ATTENDANCE_OPERATOR: ["students.view", "sessions.view", "attendance.view", "attendance.create"],
   PARENT: [],

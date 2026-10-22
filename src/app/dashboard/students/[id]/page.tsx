@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { apiDelete, apiPost, formatDate, formatDateTime, formatMoneyClient, useApi } from "@/lib/client";
+import { StudentBooksCard } from "@/components/books/StudentBooksCard";
 import { Badge, ConfirmDialog, ErrorNotice, Field, Modal, StatCard, useToast } from "@/components/ui";
 
 interface ProfileData {
@@ -423,6 +424,7 @@ export default function StudentProfilePage() {
               </div>
             </>
           )}
+          <StudentBooksCard studentId={params.id} />
         </div>
       )}
 

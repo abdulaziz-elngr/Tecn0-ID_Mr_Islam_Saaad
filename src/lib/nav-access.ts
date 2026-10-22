@@ -41,6 +41,8 @@ export const ACCESS_RULES: readonly AccessRule[] = [
   { path: "/dashboard/finance/payments", any: ["payments.view"] },
   { path: "/dashboard/finance/records", any: ["payments.view"] },
   { path: "/dashboard/finance/invoices", any: ["invoices.view"] },
+  { path: "/dashboard/finance/deductions", any: ["deductions.view"] },
+  { path: "/dashboard/finance/books", any: ["books.view"] },
 
   { path: "/dashboard/communication/notifications", any: ["notifications.view"] },
   { path: "/dashboard/communication/templates", any: ["whatsapp.view"] },

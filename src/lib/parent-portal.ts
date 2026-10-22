@@ -3,6 +3,7 @@ import { loadLedgerEnv, loadLedgers, serializeEntry, summarize } from "./payment
 import { getCenterProfile } from "./settings";
 import { attendanceRate } from "./attendance";
 import { percentage } from "./grading";
+import { ensureStudentItems, serializeBookItem } from "./books";
 
 /**
  * Read-only, parent-safe projection of one student's record.
@@ -32,6 +33,15 @@ export async function loadParentPortalData(studentId: string) {
     }
   });
   if (!student) return null;
+
+  // A student who joined the group after a reservation was opened still gets his row (and is asked to pay).
+  await ensureStudentItems({ id: student.id, organizationId: student.organizationId, groupId: student.groupId, status: student.status });
+  const bookRows = await db.bookReservationItem.findMany({
+    where: { studentId: student.id, reservation: { status: { not: "CANCELLED" } } },
+    orderBy: { createdAt: "desc" },
+    include: { reservation: true }
+  });
+  const books = bookRows.map((r) => serializeBookItem(r, r.reservation));
 
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
@@ -177,6 +187,11 @@ export async function loadParentPortalData(studentId: string) {
         status: p.status,
         paidAt: p.paidAt
       }))
+    },
+    books: {
+      // Only OPEN reservations can be "owed"; closed ones stay visible as history.
+      totalDue: Math.round(books.filter((b) => b.reservationStatus === "OPEN").reduce((n, b) => n + b.remaining, 0) * 100) / 100,
+      items: books
     },
     recitations: recitations.map((r) => ({
       id: r.id,

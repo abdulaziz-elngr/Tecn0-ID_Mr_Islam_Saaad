@@ -69,7 +69,9 @@ const SECTIONS: NavSection[] = [
       { href: "/dashboard/finance/subscriptions", key: "nav.subscriptions" },
       { href: "/dashboard/finance/payments", key: "nav.payments" },
       { href: "/dashboard/finance/records", key: "nav.paymentRecords" },
-      { href: "/dashboard/finance/invoices", key: "nav.invoices" }
+      { href: "/dashboard/finance/invoices", key: "nav.invoices" },
+      { href: "/dashboard/finance/books", key: "nav.books" },
+      { href: "/dashboard/finance/deductions", key: "nav.deductions" }
     ]
   },
   {

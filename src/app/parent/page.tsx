@@ -57,6 +57,22 @@ interface PortalData {
       paidAt: string;
     }[];
   };
+  books: {
+    totalDue: number;
+    items: {
+      itemId: string;
+      title: string;
+      kind: string;
+      reservationStatus: string;
+      payable: number;
+      reservationFee: number;
+      paid: number;
+      remaining: number;
+      status: string;
+      dueDate: string | null;
+      deliveredAt: string | null;
+    }[];
+  };
   recitations: { id: string; date: string; content: string; status: string; score: number | null; maxScore: number }[];
   exams: {
     average: number | null;
@@ -105,6 +121,12 @@ const PAY_STATUS: Record<string, [string, Tone]> = {
   REFUNDED: ["مسترد", "neutral"],
   PARTIALLY_REFUNDED: ["مسترد جزئيًا", "warning"]
 };
+const BOOK_STATUS: Record<string, [string, Tone]> = {
+  UNPAID: ["لم يدفع", "danger"],
+  PARTIAL: ["دفع جزء (الحجز لم يكتمل)", "warning"],
+  RESERVED: ["تم الحجز", "brand"],
+  PAID: ["مدفوع بالكامل", "success"]
+};
 const METHOD: Record<string, string> = { CASH: "نقدي", BANK_TRANSFER: "تحويل بنكي", CARD: "بطاقة", OTHER: "أخرى" };
 const RECITATION: Record<string, [string, Tone]> = {
   COMPLETED: ["سمّع كامل", "success"],
@@ -124,6 +146,7 @@ const TABS = [
   { id: "overview", label: "الملخص" },
   { id: "attendance", label: "الحضور" },
   { id: "payments", label: "المدفوعات" },
+  { id: "books", label: "الكتب والمذكرات" },
   { id: "recitation", label: "التسميع" },
   { id: "exams", label: "الامتحانات" },
   { id: "homework", label: "الواجبات" }
@@ -295,6 +318,35 @@ export default function ParentPortalPage() {
       </header>
 
       <main className="mx-auto flex max-w-4xl flex-col gap-4 p-3 sm:p-4">
+        {/* Unpaid book / notes reservations are shown on EVERY tab so the guardian cannot miss them. */}
+        {data.books.items
+          .filter((b) => b.reservationStatus === "OPEN" && b.remaining > 0)
+          .map((b) => (
+            <div
+              key={b.itemId}
+              role="alert"
+              className={`rounded-xl border p-3 text-sm sm:p-4 ${
+                b.status === "UNPAID" || b.status === "PARTIAL"
+                  ? "border-red-300 bg-red-50 text-red-900 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100"
+                  : "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+              }`}
+            >
+              <p className="font-semibold">
+                {b.status === "UNPAID"
+                  ? `لم يتم دفع حجز ${b.kind === "NOTES" ? "مذكرة" : "كتاب"} «${b.title}»`
+                  : b.status === "PARTIAL"
+                    ? `لم يكتمل حجز ${b.kind === "NOTES" ? "مذكرة" : "كتاب"} «${b.title}»`
+                    : `متبقي مبلغ من ${b.kind === "NOTES" ? "مذكرة" : "كتاب"} «${b.title}»`}
+              </p>
+              <p className="mt-1 text-xs opacity-90">
+                {b.status === "UNPAID" && b.reservationFee > 0 ? `مبلغ الحجز ${num(b.reservationFee)} ${cur} · ` : ""}
+                السعر {num(b.payable)} · المدفوع {num(b.paid)} · المتبقي {num(b.remaining)} {cur}
+                {b.dueDate ? ` · آخر موعد ${fmtDate(b.dueDate)}` : ""}
+              </p>
+              <button type="button" onClick={() => setTab("books")} className="mt-2 text-xs font-medium underline">التفاصيل</button>
+            </div>
+          ))}
+
         {tab === "overview" && (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -426,6 +478,34 @@ export default function ParentPortalPage() {
                       <p className="text-xs text-black/60 dark:text-white/60">إيصال {p.receiptNumber} · {fmtDateTime(p.paidAt)}</p>
                     </div>
                     <StatusBadge map={PAY_STATUS} value={p.status} />
+                  </Row>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+
+        {tab === "books" && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Stat label="المتبقي من الكتب والمذكرات" value={`${num(data.books.totalDue)} ${cur}`} tone={data.books.totalDue > 0 ? "danger" : "success"} />
+              <Stat label="عدد الحجوزات" value={num(data.books.items.length)} />
+            </div>
+            {data.books.items.length === 0 ? (
+              <Empty text="لا توجد حجوزات كتب أو مذكرات." />
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {data.books.items.map((b) => (
+                  <Row key={b.itemId}>
+                    <div>
+                      <p className="font-medium">{b.kind === "NOTES" ? "مذكرة" : "كتاب"}: {b.title}</p>
+                      <p className="text-xs text-black/60 dark:text-white/60">
+                        السعر {num(b.payable)} · المدفوع {num(b.paid)} · المتبقي {num(b.remaining)} {cur}
+                        {b.dueDate ? ` · آخر موعد ${fmtDate(b.dueDate)}` : ""}
+                      </p>
+                      {b.deliveredAt && <p className="text-xs text-emerald-700 dark:text-emerald-300">✓ تم استلام الكتاب · {fmtDate(b.deliveredAt)}</p>}
+                    </div>
+                    <StatusBadge map={BOOK_STATUS} value={b.status} />
                   </Row>
                 ))}
               </ul>
