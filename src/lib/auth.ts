@@ -1,96 +1,53 @@
-import { db } from "./db";
-import { verifyPassword } from "./password";
-import { createSession, destroySession } from "./session";
-import { checkRateLimit } from "./rate-limit";
-
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCKOUT_MINUTES = 15;
-const LOGIN_RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_LOGIN_MAX || 5);
-const LOGIN_RATE_LIMIT_WINDOW_MIN = Number(
-  process.env.RATE_LIMIT_LOGIN_WINDOW_MINUTES || 15
-);
-
-export interface LoginResult {
-  success: boolean;
-  error?: string;
-}
-
 /**
- * Authenticates a user by email + password.
+ * Simple fixed-window rate limiter.
  *
- * Security properties:
- *  - Generic error messages (never reveal whether the email exists)
- *  - Per-IP AND per-account rate limiting
- *  - Account lockout after repeated failures, with automatic unlock
- *  - Passwords compared via constant-time Argon2id verify
+ * NOTE: This in-memory implementation is per-process. It works for a
+ * single-instance dev/staging deployment. For production with more
+ * than one app instance, replace the store below with Redis (the
+ * REDIS_URL is already provisioned in .env.example) so limits are
+ * shared across instances — see docs/ARCHITECTURE.md.
  */
-export async function login(params: {
-  email: string;
-  password: string;
-  ipAddress?: string;
-  userAgent?: string;
-}): Promise<LoginResult> {
-  const email = params.email.trim().toLowerCase();
 
-  const ipKey = `login:ip:${params.ipAddress ?? "unknown"}`;
-  const ipCheck = checkRateLimit(
-    ipKey,
-    LOGIN_RATE_LIMIT_MAX,
-    LOGIN_RATE_LIMIT_WINDOW_MIN * 60 * 1000
-  );
-  if (!ipCheck.allowed) {
-    return { success: false, error: "Too many attempts. Please try again later." };
-  }
-
-  const user = await db.user.findUnique({ where: { email } });
-  const genericError = "Invalid email or password.";
-
-  if (!user || !user.isActive || user.deletedAt) {
-    return { success: false, error: genericError };
-  }
-
-  if (user.lockedUntil && user.lockedUntil > new Date()) {
-    return {
-      success: false,
-      error: "This account is temporarily locked due to repeated failed attempts."
-    };
-  }
-
-  const passwordValid = await verifyPassword(user.passwordHash, params.password);
-
-  if (!passwordValid) {
-    const newFailedCount = user.failedLoginCount + 1;
-    const shouldLock = newFailedCount >= MAX_FAILED_ATTEMPTS;
-
-    await db.user.update({
-      where: { id: user.id },
-      data: {
-        failedLoginCount: shouldLock ? 0 : newFailedCount,
-        lockedUntil: shouldLock
-          ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
-          : user.lockedUntil
-      }
-    });
-
-    return { success: false, error: genericError };
-  }
-
-  // Successful login — reset failure counters.
-  await db.user.update({
-    where: { id: user.id },
-    data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() }
-  });
-
-  await createSession({
-    userId: user.id,
-    organizationId: user.organizationId,
-    ipAddress: params.ipAddress,
-    userAgent: params.userAgent
-  });
-
-  return { success: true };
+interface Bucket {
+  count: number;
+  windowStart: number;
+  windowMs: number;
 }
 
-export async function logout(): Promise<void> {
-  await destroySession();
+const buckets = new Map<string, Bucket>();
+
+/** Remove expired buckets so the Map can't grow forever. */
+function cleanup(now: number): void {
+  if (buckets.size < 5000) return;
+  buckets.forEach((b, key) => {
+    if (now - b.windowStart > b.windowMs) buckets.delete(key);
+  });
+}
+
+/** Counts one attempt against `key` and says whether it is still allowed. */
+export function checkRateLimit(
+  key: string,
+  maxAttempts: number,
+  windowMs: number
+): { allowed: boolean; remaining: number } {
+  const now = Date.now();
+  cleanup(now);
+  const bucket = buckets.get(key);
+
+  if (!bucket || now - bucket.windowStart > windowMs) {
+    buckets.set(key, { count: 1, windowStart: now, windowMs });
+    return { allowed: true, remaining: maxAttempts - 1 };
+  }
+
+  if (bucket.count >= maxAttempts) {
+    return { allowed: false, remaining: 0 };
+  }
+
+  bucket.count += 1;
+  return { allowed: true, remaining: maxAttempts - bucket.count };
+}
+
+/** Clears the counter for `key` (e.g. after a successful login). */
+export function resetRateLimit(key: string): void {
+  buckets.delete(key);
 }
