@@ -96,8 +96,16 @@ export async function GET(request: NextRequest) {
             OR: [
               { fullName: { contains: search, mode: "insensitive" as const } },
               { studentCode: { contains: search, mode: "insensitive" as const } },
-              { phone: { contains: search } },
-              { parents: { some: { parent: { phone: { contains: search } } } } }
+              { qrCode: search },
+              // Phone clauses only for digit-like input. With them in the OR, Postgres
+              // cannot use the name/code indexes at all (one of them goes through a
+              // parent join), so a plain name search scanned the whole table.
+              ...(/^[+\d\s-]{3,}$/.test(search)
+                ? [
+                    { phone: { contains: search } },
+                    { parents: { some: { parent: { phone: { contains: search } } } } }
+                  ]
+                : [])
             ]
           }
         : {})

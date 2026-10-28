@@ -89,18 +89,21 @@ export async function login(params: {
   }
 
   // Successful login — reset failure counters (DB + in-memory limiter).
+  // The two database writes are independent, so they run at the same time
+  // (one round trip of waiting instead of two).
   resetRateLimit(pairKey);
-  await db.user.update({
-    where: { id: user.id },
-    data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() }
-  });
-
-  await createSession({
-    userId: user.id,
-    organizationId: user.organizationId,
-    ipAddress: params.ipAddress,
-    userAgent: params.userAgent
-  });
+  await Promise.all([
+    db.user.update({
+      where: { id: user.id },
+      data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() }
+    }),
+    createSession({
+      userId: user.id,
+      organizationId: user.organizationId,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent
+    })
+  ]);
 
   return { success: true };
 }

@@ -102,21 +102,30 @@ export async function createSession(params: {
   return jwt;
 }
 
-export async function getSessionPayload(): Promise<SessionPayload | null> {
+/** Step 1 — CPU only (no database): is the cookie a validly signed, unexpired JWT? */
+export async function verifySessionCookie(): Promise<SessionPayload | null> {
   const token = cookies().get(COOKIE_NAME)?.value;
   if (!token) return null;
-
   try {
     const { payload } = await jwtVerify(token, getSecretKey());
-    const parsed = payload as unknown as SessionPayload;
+    return payload as unknown as SessionPayload;
+  } catch {
+    return null;
+  }
+}
 
-    // Verify the backing session row is still valid (not revoked/expired).
+/**
+ * Step 2 — is the backing session row still valid (not revoked / expired)?
+ * Also slides the idle window forward (throttled).
+ */
+export async function validateSessionRow(parsed: SessionPayload): Promise<boolean> {
+  try {
     const session =
       sessionRowCache.get(parsed.sid) ??
       (await db.session.findUnique({ where: { id: parsed.sid } }));
     if (!session || session.revokedAt || session.expiresAt < new Date()) {
       sessionRowCache.delete(parsed.sid);
-      return null;
+      return false;
     }
     sessionRowCache.set(parsed.sid, session);
 
@@ -130,11 +139,16 @@ export async function getSessionPayload(): Promise<SessionPayload | null> {
       });
       sessionRowCache.set(session.id, touched);
     }
-
-    return parsed;
+    return true;
   } catch {
-    return null;
+    return false;
   }
+}
+
+export async function getSessionPayload(): Promise<SessionPayload | null> {
+  const parsed = await verifySessionCookie();
+  if (!parsed) return null;
+  return (await validateSessionRow(parsed)) ? parsed : null;
 }
 
 export async function destroySession(): Promise<void> {

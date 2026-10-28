@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { getSessionPayload } from "./session";
+import { validateSessionRow, verifySessionCookie } from "./session";
 import { TtlCache } from "./ttl-cache";
 
 /**
@@ -59,14 +59,22 @@ export function clearAuthContextCache(): void {
 }
 
 export async function getAuthContext(): Promise<AuthContext | null> {
-  const payload = await getSessionPayload();
+  // The JWT is verified locally (no database), so its `sub` can be trusted to start
+  // loading the user's permissions at the same time as the session row is checked.
+  // On a cold instance that is ONE database round trip of waiting instead of two.
+  const payload = await verifySessionCookie();
   if (!payload) return null;
 
   const cached = authContextCache.get(payload.sub);
-  if (cached) return cached;
-  const fresh = await loadAuthContext(payload.sub);
-  if (fresh) authContextCache.set(payload.sub, fresh);
-  return fresh;
+  const [sessionOk, ctx] = await Promise.all([
+    validateSessionRow(payload),
+    cached ? Promise.resolve(cached) : loadAuthContext(payload.sub)
+  ]);
+
+  // A revoked / expired session never gets (or caches) a context.
+  if (!sessionOk || !ctx) return null;
+  if (!cached) authContextCache.set(payload.sub, ctx);
+  return ctx;
 }
 
 async function loadAuthContext(userId: string): Promise<AuthContext | null> {
