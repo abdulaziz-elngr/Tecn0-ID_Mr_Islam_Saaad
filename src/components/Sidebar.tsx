@@ -31,7 +31,6 @@ const SECTIONS: NavSection[] = [
     key: "nav.group.people",
     items: [
       { href: "/dashboard/students", key: "nav.students" },
-      { href: "/dashboard/parents", key: "nav.parents" },
       { href: "/dashboard/teachers", key: "nav.teachers" },
       { href: "/dashboard/employees", key: "nav.employees" }
     ]

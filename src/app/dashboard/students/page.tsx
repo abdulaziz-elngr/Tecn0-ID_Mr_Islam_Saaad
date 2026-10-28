@@ -204,8 +204,9 @@ function StudentsPage() {
 
   // Same rule the API applies (normalizeWhatsAppNumber), so both layers agree.
   const whatsappTrimmed = form.parentWhatsapp.trim();
+  // Optional: empty is fine, but a typed number must still be valid.
   const whatsappLocalError = !whatsappTrimmed
-    ? t("students.parentWhatsappRequired")
+    ? null
     : normalizeWhatsAppNumber(whatsappTrimmed)
       ? null
       : t("students.parentWhatsappInvalid");
@@ -299,7 +300,7 @@ function StudentsPage() {
           parentName: form.parentName.trim() || undefined,
           // An existing guardian's phone is not editable here (it identifies the Parent row).
           ...(editing.hasGuardian ? {} : { parentPhone: form.parentPhone.trim() || undefined }),
-          parentWhatsappNumber: whatsappTrimmed,
+          parentWhatsappNumber: whatsappTrimmed || undefined,
           overrideCapacity
         });
         toast.success(t("common.saved"));
@@ -317,7 +318,7 @@ function StudentsPage() {
           phone: form.phone || undefined,
           parentName: form.parentName || undefined,
           parentPhone: form.parentPhone || undefined,
-          parentWhatsappNumber: whatsappTrimmed,
+          parentWhatsappNumber: whatsappTrimmed || undefined,
           address: form.address || undefined,
           school: form.school || undefined,
           notes: form.notes || undefined,
@@ -653,7 +654,7 @@ function StudentsPage() {
                 />
               )}
             </Field>
-            <Field label={t("students.parentWhatsapp")} required hint={t("students.parentWhatsappHint")}>
+            <Field label={t("students.parentWhatsapp")} hint={t("students.parentWhatsappHint")}>
               {(id) => (
                 <>
                   <input
@@ -671,7 +672,6 @@ function StudentsPage() {
                     }}
                     onBlur={() => setWhatsappTouched(true)}
                     aria-invalid={whatsappError ? true : undefined}
-                    required
                   />
                   {whatsappError && (
                     <p role="alert" className="text-xs text-red-600 dark:text-red-400">
