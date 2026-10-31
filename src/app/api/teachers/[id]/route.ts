@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { clearAuthContextCache, requirePermission } from "@/lib/rbac";
+import { requirePermission } from "@/lib/rbac";
 import { BusinessRuleError, NotFoundError, handleApiError, ok, readJson } from "@/lib/api";
 import { writeAuditLog } from "@/lib/audit";
 import { assertCanManageUser } from "@/lib/scope";
@@ -20,13 +20,6 @@ const GROUP_BRIEF = {
   select: { id: true, name: true, grade: { select: { name: true } }, subject: { select: { id: true, name: true } } }
 } as const;
 
-/** Groups an ASSISTANT works in (many assistants may share one group). */
-const ASSISTANT_LINKS = {
-  where: { group: { deletedAt: null } },
-  orderBy: { group: { name: "asc" } },
-  select: { group: { select: { id: true, name: true, grade: { select: { name: true } }, subject: { select: { id: true, name: true } } } } }
-} as const;
-
 async function findScopedTeacher(organizationId: string, branchIds: string[] | undefined, id: string) {
   return db.teacher.findFirst({
     where: {
@@ -38,7 +31,7 @@ async function findScopedTeacher(organizationId: string, branchIds: string[] | u
     include: {
       branch: { select: { id: true, name: true } },
       groupsAsTeacher: GROUP_BRIEF,
-      assistantLinks: ASSISTANT_LINKS
+      groupsAsAssistant: GROUP_BRIEF
     }
   });
 }
@@ -46,7 +39,7 @@ async function findScopedTeacher(organizationId: string, branchIds: string[] | u
 type ScopedTeacher = NonNullable<Awaited<ReturnType<typeof findScopedTeacher>>>;
 
 function assignedGroupIds(teacher: ScopedTeacher): string[] {
-  return (teacher.isAssistant ? teacher.assistantLinks.map((l) => l.group) : teacher.groupsAsTeacher).map((g) => g.id);
+  return (teacher.isAssistant ? teacher.groupsAsAssistant : teacher.groupsAsTeacher).map((g) => g.id);
 }
 
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
@@ -126,7 +119,6 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       }
     });
 
-    clearAuthContextCache(); // permissions/roles/branches changed — drop the cached auth context
     return ok({ ...updated, groupIds: afterGroupIds });
   } catch (err) {
     return handleApiError(SCOPE, err);
@@ -213,7 +205,6 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
       reason: reason.data.reason
     });
 
-    clearAuthContextCache(); // permissions/roles/branches changed — drop the cached auth context
     return ok({
       id: existing.id,
       deleted: true,

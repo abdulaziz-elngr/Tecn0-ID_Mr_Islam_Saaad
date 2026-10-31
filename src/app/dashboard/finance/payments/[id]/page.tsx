@@ -51,22 +51,12 @@ function ReceiptView() {
   const { data: r, loading, error } = useApi<ReceiptData>(`/api/payments/${params.id}`);
   const isCopy = search.get("copy") === "1";
 
-  // `embed=1` = loaded in the hidden iframe of printReceiptSilently(): print, then tell the parent.
-  const embed = search.get("embed") === "1";
   useEffect(() => {
-    if (!r || search.get("print") !== "1") return;
-    const timer = setTimeout(
-      () => {
-        if (embed) {
-          const notify = () => window.parent?.postMessage({ type: "receipt-printed", id: r.id }, window.location.origin);
-          window.addEventListener("afterprint", notify, { once: true });
-        }
-        window.print();
-      },
-      embed ? 700 : 400
-    );
-    return () => clearTimeout(timer);
-  }, [r, search, embed]);
+    if (r && search.get("print") === "1") {
+      const timer = setTimeout(() => window.print(), 400);
+      return () => clearTimeout(timer);
+    }
+  }, [r, search]);
 
   return (
     <div className="space-y-5">

@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { currentMonth, qs, useApi } from "@/lib/client";
 import { fmt, formatLessonDate, monthLabel, parseMonthInput, weekdayLabel } from "@/lib/lesson-format";
-import { MonthYearPicker } from "@/components/MonthYearPicker";
 import { Badge, ErrorNotice, Field, PageHeader } from "@/components/ui";
 import { GroupPicker } from "@/components/GroupPicker";
 import { LessonReportView } from "@/components/LessonReportView";
@@ -84,11 +83,13 @@ function LessonsInner() {
         <div className="max-w-xs">
           <Field label={t("lf.month")} required>
             {(id) => (
-              <MonthYearPicker
+              <input
                 id={id}
+                type="month"
+                className="input"
                 value={monthValue}
-                onChange={(v) => {
-                  setMonthValue(v);
+                onChange={(e) => {
+                  setMonthValue(e.target.value);
                   setLessonId("");
                 }}
               />

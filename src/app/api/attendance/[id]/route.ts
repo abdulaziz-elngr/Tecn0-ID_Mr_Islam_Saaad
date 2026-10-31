@@ -1,8 +1,7 @@
 import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, type AuthContext } from "@/lib/rbac";
-import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
+import { requirePermission } from "@/lib/rbac";
 import { handleApiError, ok, readJson, NotFoundError } from "@/lib/api";
 import { writeAuditLog } from "@/lib/audit";
 
@@ -24,17 +23,15 @@ const patchSchema = z.object({
 const deleteSchema = z.object({ reason: z.string().trim().min(3).max(500) });
 
 async function findScoped(
-  ctx: AuthContext,
+  ctx: { organizationId: string; isOrgWide: boolean; branchIds: string[] },
   id: string
 ) {
-  const ownGroupIds = await resolveOwnGroupIds(ctx);
   return db.attendance.findFirst({
     where: {
       id,
       organizationId: ctx.organizationId,
       deletedAt: null,
-      ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } }),
-      ...groupIdFilter(ownGroupIds)
+      ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
     }
   });
 }

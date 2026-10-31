@@ -14,7 +14,6 @@ import {
   parseMonthInput,
   weekdayLabel
 } from "@/lib/lesson-format";
-import { MonthYearPicker } from "@/components/MonthYearPicker";
 import { Badge, ConfirmDialog, DataTable, ErrorNotice, Field, PageHeader, useToast } from "@/components/ui";
 
 /**
@@ -111,17 +110,6 @@ export default function LessonFormationPage() {
   );
   const group = activeGroups.find((g) => g.id === groupId) ?? null;
   const slotCount = group?.schedules.length ?? 0;
-
-  // Only one active stage → select it right away.
-  const activeStages = useMemo(() => (stages ?? []).filter((s) => s.isActive), [stages]);
-  useEffect(() => {
-    if (!stageId && activeStages.length === 1) setStageId(activeStages[0]!.id);
-  }, [activeStages, stageId]);
-
-  // Only one subject for the chosen grade → select it right away.
-  useEffect(() => {
-    if (!subjectId && subjectsForGrade.length === 1) setSubjectId(subjectsForGrade[0]!.id);
-  }, [subjectsForGrade, subjectId]);
 
   // Keep lessons/week within what the group's schedule allows.
   useEffect(() => {
@@ -220,7 +208,7 @@ export default function LessonFormationPage() {
       <div className="card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
         <Field label={t("lf.month")} required>
           {(id) => (
-            <MonthYearPicker id={id} value={monthValue} onChange={setMonthValue} />
+            <input id={id} type="month" className="input" value={monthValue} onChange={(e) => setMonthValue(e.target.value)} />
           )}
         </Field>
         <Field label={t("nav.stages")} required>

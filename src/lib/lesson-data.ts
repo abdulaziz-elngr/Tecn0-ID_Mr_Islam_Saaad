@@ -2,12 +2,10 @@ import { db } from "./db";
 import { BusinessRuleError, NotFoundError } from "./api";
 import { writeAuditLog } from "./audit";
 import { resolveBranchScope, type AuthContext } from "./rbac";
-import { groupIdFilter, resolveOwnGroupIds } from "./group-access";
 import { getAnalyticsThresholds } from "./settings";
 import { countTrailingAbsences } from "./analytics";
 import { canCloseLesson, canOpenLesson, lateMinutes, nextLesson, type LessonStatus } from "./lesson-flow";
 import {
-  applyFeeExemption,
   buildSnapshotWarnings,
   countAttendance,
   isFeeUnpaid,
@@ -20,10 +18,7 @@ import {
 } from "./lesson-snapshot";
 import { remainingAmount } from "./billing";
 import { paymentWarningFor, type PaymentWarning } from "./payment-warning";
-import { exemptionWindowOf } from "./payment-ledger";
-import { inExemption } from "./subscription-months";
 import { DEFAULT_TIME_ZONE, sessionStartInstant } from "./tz";
-import { TtlCache } from "./ttl-cache";
 
 /**
  * Database-backed operations of the Stage 2 lesson system. The decisions
@@ -39,27 +34,21 @@ function canSeeFees(ctx: AuthContext): boolean {
   return ctx.permissions.has("subscriptions.view") || ctx.permissions.has("payments.view");
 }
 
-const timeZoneCache = new TtlCache<string>(10 * 60 * 1000, 200);
-
 export async function getCenterTimeZone(branchId: string): Promise<string> {
-  return timeZoneCache.wrap(branchId, async () => {
-    const branch = await db.branch.findUnique({
-      where: { id: branchId },
-      select: { center: { select: { timezone: true } } }
-    });
-    return branch?.center.timezone || DEFAULT_TIME_ZONE;
+  const branch = await db.branch.findUnique({
+    where: { id: branchId },
+    select: { center: { select: { timezone: true } } }
   });
+  return branch?.center.timezone || DEFAULT_TIME_ZONE;
 }
 
 /** Loads a session inside the caller's organization/branch scope, or throws NotFoundError. */
 export async function findScopedSession(ctx: AuthContext, id: string) {
-  const ownGroupIds = await resolveOwnGroupIds(ctx);
   const session = await db.classSession.findFirst({
     where: {
       id,
       organizationId: ctx.organizationId,
-      ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } }),
-      ...groupIdFilter(ownGroupIds)
+      ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
     }
   });
   if (!session) throw new NotFoundError("Lesson not found.");
@@ -212,6 +201,181 @@ export async function closeLesson(ctx: AuthContext, sessionId: string, ipAddress
 }
 
 // -------------------------------------------------------------------------
+// Adding a student to a lesson AFTER it was closed
+// -------------------------------------------------------------------------
+
+export type LateAddType = "REGULAR" | "LATE" | "EXCUSED" | "MAKE_UP";
+
+export interface AddStudentToClosedLessonInput {
+  studentId: string;
+  type: LateAddType;
+  /** Mandatory: a closed lesson is final, so every later change must say why. */
+  reason: string;
+}
+
+/**
+ * A closed (COMPLETED) lesson takes no more scans, but real life happens: a
+ * student attended and was never scanned (so close marked them ABSENT), or a
+ * student from another group attended as a make-up. This adds / corrects that
+ * student's record on the closed lesson through the AUDITED path:
+ *
+ *  - no record yet           → a new record is created;
+ *  - auto-marked ABSENT      → the record is changed to the real type;
+ *  - soft-deleted record     → it is restored (the unique slot is still held by it);
+ *  - already present/late/…  → refused (ALREADY_RECORDED) — use the normal correction.
+ *
+ * Every path writes an AttendanceAdjustment (previous/new value + reason) and an
+ * AuditLog row in the same transaction. `recordedAt` is set to the lesson's close
+ * time so the lesson report keeps sensible times; the real moment of the change is
+ * kept in the adjustment/audit rows.
+ */
+export async function addStudentToClosedLesson(
+  ctx: AuthContext,
+  sessionId: string,
+  input: AddStudentToClosedLessonInput,
+  ipAddress?: string
+) {
+  const session = await findScopedSession(ctx, sessionId);
+
+  if (session.status === "CANCELLED") {
+    throw new BusinessRuleError("This lesson has been cancelled.", { code: "SESSION_CANCELLED" });
+  }
+  if (session.status !== "COMPLETED") {
+    throw new BusinessRuleError("The lesson is not closed. Record attendance normally.", { code: "LESSON_NOT_CLOSED" });
+  }
+
+  const student = await db.student.findFirst({
+    where: { id: input.studentId, organizationId: ctx.organizationId, deletedAt: null },
+    select: { id: true, fullName: true, branchId: true, groupId: true, status: true }
+  });
+  if (!student) throw new NotFoundError("Student not found.");
+  resolveBranchScope(ctx, student.branchId);
+
+  if (student.status !== "ACTIVE") {
+    throw new BusinessRuleError("This student account is not active.", { code: "STUDENT_NOT_ACTIVE" });
+  }
+
+  // Same group rule as every other attendance path: another group's student is a make-up.
+  const ownGroup = student.groupId === session.groupId;
+  if (!ownGroup && input.type !== "MAKE_UP") {
+    throw new BusinessRuleError("This student belongs to another group. Use make-up attendance instead.", {
+      code: "DIFFERENT_GROUP"
+    });
+  }
+  if (ownGroup && input.type === "MAKE_UP") {
+    throw new BusinessRuleError("A student of this group is not a make-up attendee.", { code: "NOT_A_MAKE_UP" });
+  }
+  if (input.type === "MAKE_UP" && !ctx.permissions.has("attendance.makeup.approve")) {
+    throw new BusinessRuleError("You are not allowed to authorise make-up attendance.", { status: 403 });
+  }
+
+  const recordedAt = session.closedAt ?? new Date();
+
+  let outcome: { attendanceId: string; mode: "CREATED" | "CONVERTED_FROM_ABSENT" | "RESTORED"; previousType: string | null };
+  try {
+    outcome = await db.$transaction(async (tx) => {
+      // Soft-deleted rows still own the (sessionId, studentId) unique slot, so look at them too.
+      const existing = await tx.attendance.findFirst({ where: { sessionId: session.id, studentId: student.id } });
+
+      const makeUpFields =
+        input.type === "MAKE_UP"
+          ? { makeUpReason: input.reason, makeUpApprovedBy: ctx.userId, originGroupId: student.groupId }
+          : {};
+
+      if (!existing) {
+        const row = await tx.attendance.create({
+          data: {
+            organizationId: ctx.organizationId,
+            branchId: session.branchId,
+            sessionId: session.id,
+            studentId: student.id,
+            groupId: session.groupId,
+            type: input.type,
+            recordedAt,
+            operatorUserId: ctx.userId,
+            notes: input.reason,
+            ...makeUpFields
+          }
+        });
+        await tx.attendanceAdjustment.create({
+          data: {
+            attendanceId: row.id,
+            actorUserId: ctx.userId,
+            action: "ADD_AFTER_CLOSE",
+            previousValue: undefined,
+            newValue: { type: input.type },
+            reason: input.reason
+          }
+        });
+        return { attendanceId: row.id, mode: "CREATED" as const, previousType: null };
+      }
+
+      if (existing.deletedAt === null && existing.type !== "ABSENT") {
+        throw new BusinessRuleError("This student already has an attendance record in this lesson.", {
+          code: "ALREADY_RECORDED"
+        });
+      }
+
+      const restored = existing.deletedAt !== null;
+      const row = await tx.attendance.update({
+        where: { id: existing.id },
+        data: {
+          type: input.type,
+          deletedAt: null,
+          recordedAt,
+          operatorUserId: ctx.userId,
+          notes: input.reason,
+          ...makeUpFields
+        }
+      });
+      await tx.attendanceAdjustment.create({
+        data: {
+          attendanceId: row.id,
+          actorUserId: ctx.userId,
+          action: restored ? "RESTORE_AFTER_CLOSE" : "ADD_AFTER_CLOSE",
+          previousValue: { type: existing.type, deletedAt: existing.deletedAt },
+          newValue: { type: row.type, deletedAt: null },
+          reason: input.reason
+        }
+      });
+      return {
+        attendanceId: row.id,
+        mode: restored ? ("RESTORED" as const) : ("CONVERTED_FROM_ABSENT" as const),
+        previousType: existing.type
+      };
+    });
+  } catch (err) {
+    // Two operators adding the same student at once: the unique key decides.
+    if ((err as { code?: string } | null)?.code === "P2002") {
+      throw new BusinessRuleError("This student already has an attendance record in this lesson.", {
+        code: "ALREADY_RECORDED"
+      });
+    }
+    throw err;
+  }
+
+  await writeAuditLog({
+    organizationId: ctx.organizationId,
+    actorUserId: ctx.userId,
+    action: "ADD_STUDENT_AFTER_CLOSE",
+    entityType: "Attendance",
+    entityId: outcome.attendanceId,
+    beforeValue: outcome.previousType ? { type: outcome.previousType } : undefined,
+    afterValue: {
+      sessionId: session.id,
+      lessonNumber: session.lessonNumber,
+      studentId: student.id,
+      type: input.type,
+      mode: outcome.mode
+    },
+    reason: input.reason,
+    ipAddress
+  });
+
+  return { attendanceId: outcome.attendanceId, mode: outcome.mode, studentName: student.fullName };
+}
+
+// -------------------------------------------------------------------------
 // Student snapshot (shown immediately after a scan / manual selection)
 // -------------------------------------------------------------------------
 
@@ -276,7 +440,7 @@ export async function buildStudentSnapshot(
 /** Same as buildStudentSnapshot but reuses already-loaded (and already scope-checked) rows — used by the scan route. */
 export async function snapshotFor(
   ctx: AuthContext,
-  session: { id: string; groupId: string; date: Date; lessonNumber: number | null; group?: { subjectId?: string | null } },
+  session: { id: string; groupId: string; date: Date; lessonNumber: number | null },
   student: {
     id: string;
     fullName: string;
@@ -284,24 +448,21 @@ export async function snapshotFor(
     status: string;
     groupId: string;
     group: { id: string; name: string } | null;
-    /** Optional: when the caller already loaded them, the payment warning skips one student query. */
-    gradeId?: string;
-    enrollmentDate?: Date;
   }
 ): Promise<StudentLessonSnapshot> {
   const canRecitation = ctx.permissions.has("recitation.view");
   const canExam = ctx.permissions.has("exams.view");
   const canFees = canSeeFees(ctx);
 
-  // The scan route already loaded the group; only fall back to a query when it did not.
-  const subjectId =
-    session.group?.subjectId !== undefined
-      ? session.group.subjectId
-      : ((await db.group.findUnique({ where: { id: session.groupId }, select: { subjectId: true } }))?.subjectId ?? null);
+  const lessonGroup = await db.group.findUnique({
+    where: { id: session.groupId },
+    select: { subjectId: true }
+  });
+  const subjectId = lessonGroup?.subjectId ?? null;
   const periodYear = session.date.getUTCFullYear();
   const periodMonth = session.date.getUTCMonth() + 1;
 
-  const [thisLesson, history, recitation, exam, subscriptions, thresholds, paymentWarning, exemptRow] = await Promise.all([
+  const [thisLesson, history, recitation, exam, subscriptions, thresholds, paymentWarning] = await Promise.all([
     db.attendance.findFirst({
       where: { sessionId: session.id, studentId: student.id, deletedAt: null },
       select: { type: true, recordedAt: true }
@@ -350,27 +511,11 @@ export async function snapshotFor(
         })
       : Promise.resolve([]),
     getAnalyticsThresholds(ctx.organizationId),
-    paymentWarningFor(
-      ctx.organizationId,
-      student.id,
-      student.gradeId && student.enrollmentDate
-        ? { id: student.id, gradeId: student.gradeId, enrollmentDate: student.enrollmentDate }
-        : undefined
-    ).catch((err) => {
+    paymentWarningFor(ctx.organizationId, student.id).catch((err) => {
       console.error("[snapshot] payment warning failed", err);
       return null;
-    }),
-    canFees
-      ? db.student.findUnique({
-          where: { id: student.id },
-          select: { feeExempt: true, feeExemptFrom: true, feeExemptUntil: true }
-        })
-      : Promise.resolve(null)
+    })
   ]);
-  // Fee-exempt students owe nothing for the lesson's month (boundaries are stored at noon UTC).
-  const exemptThisMonth = Boolean(
-    exemptRow && inExemption(exemptionWindowOf(exemptRow, "UTC"), { year: periodYear, month: periodMonth })
-  );
 
   const lastRow = history[0] ?? null;
 
@@ -379,16 +524,13 @@ export async function snapshotFor(
   const consecutiveAbsences = countTrailingAbsences(chronological);
 
   const fee = canFees
-    ? applyFeeExemption(
-        resolveFeeState(
-          subscriptions.map((s) => ({
-            groupId: s.groupId,
-            status: s.status,
-            remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
-          })),
-          session.groupId
-        ),
-        exemptThisMonth
+    ? resolveFeeState(
+        subscriptions.map((s) => ({
+          groupId: s.groupId,
+          status: s.status,
+          remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
+        })),
+        session.groupId
       )
     : null;
 
@@ -643,27 +785,15 @@ export async function buildLessonReport(ctx: AuthContext, sessionId: string): Pr
       list.push(sub);
       byStudent.set(sub.studentId, list);
     }
-    const exemptRows = await db.student.findMany({
-      where: { id: { in: roster.map((s) => s.id) } },
-      select: { id: true, feeExempt: true, feeExemptFrom: true, feeExemptUntil: true }
-    });
-    const exemptIds = new Set(
-      exemptRows
-        .filter((r) => inExemption(exemptionWindowOf(r, "UTC"), { year, month }))
-        .map((r) => r.id)
-    );
     unpaid = [];
     for (const student of roster) {
-      const fee = applyFeeExemption(
-        resolveFeeState(
-          (byStudent.get(student.id) ?? []).map((s) => ({
-            groupId: s.groupId,
-            status: s.status,
-            remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
-          })),
-          session.groupId
-        ),
-        exemptIds.has(student.id)
+      const fee = resolveFeeState(
+        (byStudent.get(student.id) ?? []).map((s) => ({
+          groupId: s.groupId,
+          status: s.status,
+          remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount))
+        })),
+        session.groupId
       );
       if (isFeeUnpaid(fee.state)) {
         unpaid.push({

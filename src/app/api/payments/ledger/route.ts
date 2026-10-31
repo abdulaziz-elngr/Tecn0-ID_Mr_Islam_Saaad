@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
     resolveBranchScope(ctx, student.branchId);
 
     const env = await loadLedgerEnv(ctx.organizationId);
-    const ledger = (await loadLedgers(ctx.organizationId, [student], env)).get(student.id) ?? [];
+    const ledger = (await loadLedgers(ctx.organizationId, [student], env, undefined, { advance: true })).get(student.id) ?? [];
     const sum = summarize(ledger);
 
     return ok({
@@ -59,9 +59,10 @@ export async function GET(request: NextRequest) {
       dueDay: env.dueDay,
       allowPartial: env.allowPartial,
       current: env.current,
+      advanceMonths: env.advanceMonths,
       ledger: ledger.map(serializeEntry),
       outstanding: sum.outstanding.map(serializeEntry),
-      nextEligible: sum.oldest ? serializeEntry(sum.oldest) : null,
+      nextEligible: sum.nextPayable ? serializeEntry(sum.nextPayable) : null,
       totalDue: sum.totalDue,
       lastPaidMonth: sum.lastPaidMonth,
       canRecord: ctx.permissions.has("payments.create"),

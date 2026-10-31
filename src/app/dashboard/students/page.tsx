@@ -178,8 +178,7 @@ function StudentsPage() {
       .then(async (r) => {
         if (!r.ok) {
           const body = await r.json().catch(() => ({}));
-          const ref = typeof body.errorId === "string" ? ` (ref ${body.errorId.slice(0, 8)})` : "";
-          throw new Error((body.error ?? "Failed to load students.") + ref);
+          throw new Error(body.error ?? "Failed to load students.");
         }
         return r.json();
       })
@@ -204,9 +203,8 @@ function StudentsPage() {
 
   // Same rule the API applies (normalizeWhatsAppNumber), so both layers agree.
   const whatsappTrimmed = form.parentWhatsapp.trim();
-  // Optional: empty is fine, but a typed number must still be valid.
   const whatsappLocalError = !whatsappTrimmed
-    ? null
+    ? t("students.parentWhatsappRequired")
     : normalizeWhatsAppNumber(whatsappTrimmed)
       ? null
       : t("students.parentWhatsappInvalid");
@@ -300,7 +298,7 @@ function StudentsPage() {
           parentName: form.parentName.trim() || undefined,
           // An existing guardian's phone is not editable here (it identifies the Parent row).
           ...(editing.hasGuardian ? {} : { parentPhone: form.parentPhone.trim() || undefined }),
-          parentWhatsappNumber: whatsappTrimmed || undefined,
+          parentWhatsappNumber: whatsappTrimmed,
           overrideCapacity
         });
         toast.success(t("common.saved"));
@@ -318,7 +316,7 @@ function StudentsPage() {
           phone: form.phone || undefined,
           parentName: form.parentName || undefined,
           parentPhone: form.parentPhone || undefined,
-          parentWhatsappNumber: whatsappTrimmed || undefined,
+          parentWhatsappNumber: whatsappTrimmed,
           address: form.address || undefined,
           school: form.school || undefined,
           notes: form.notes || undefined,
@@ -378,11 +376,9 @@ function StudentsPage() {
       <PageHeader
         title={t("students.title")}
         actions={
-          permissions.has("students.create") ? (
-            <button className="btn-primary" onClick={openCreate}>
-              {t("students.add")}
-            </button>
-          ) : undefined
+          <button className="btn-primary" onClick={openCreate}>
+            {t("students.add")}
+          </button>
         }
       />
 
@@ -654,7 +650,7 @@ function StudentsPage() {
                 />
               )}
             </Field>
-            <Field label={t("students.parentWhatsapp")} hint={t("students.parentWhatsappHint")}>
+            <Field label={t("students.parentWhatsapp")} required hint={t("students.parentWhatsappHint")}>
               {(id) => (
                 <>
                   <input
@@ -672,6 +668,7 @@ function StudentsPage() {
                     }}
                     onBlur={() => setWhatsappTouched(true)}
                     aria-invalid={whatsappError ? true : undefined}
+                    required
                   />
                   {whatsappError && (
                     <p role="alert" className="text-xs text-red-600 dark:text-red-400">

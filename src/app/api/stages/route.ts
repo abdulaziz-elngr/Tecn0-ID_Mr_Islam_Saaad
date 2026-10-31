@@ -1,8 +1,7 @@
 import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireAnyPermission, requirePermission } from "@/lib/rbac";
-import { resolveOwnGroupIds } from "@/lib/group-access";
+import { requirePermission } from "@/lib/rbac";
 import { writeAuditLog } from "@/lib/audit";
 import { BusinessRuleError, created, handleApiError, ok, readJson } from "@/lib/api";
 
@@ -20,24 +19,12 @@ const createSchema = z.object({
  */
 export async function GET() {
   try {
-    // Read-only list used by every stage/grade/group picker, so it is open to
-    // the roles that work with groups. Writing still needs academic.stages.manage.
-    const ctx = await requireAnyPermission([
-      "academic.stages.manage",
-      "students.view",
-      "sessions.view",
-      "attendance.view",
-      "payments.view"
-    ]);
-    // Teaching logins only see the stages/grades that contain their own groups.
-    const ownGroupIds = await resolveOwnGroupIds(ctx);
-    const ownGradeFilter = ownGroupIds ? { groups: { some: { id: { in: ownGroupIds }, deletedAt: null } } } : {};
+    const ctx = await requirePermission("academic.stages.manage");
     const stages = await db.stage.findMany({
-      where: { organizationId: ctx.organizationId, ...(ownGroupIds ? { grades: { some: ownGradeFilter } } : {}) },
+      where: { organizationId: ctx.organizationId },
       orderBy: [{ order: "asc" }, { name: "asc" }],
       include: {
         grades: {
-          where: ownGradeFilter,
           orderBy: { order: "asc" },
           include: { _count: { select: { students: true, groups: true } } }
         }

@@ -2,7 +2,6 @@ import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, resolveBranchScope } from "@/lib/rbac";
-import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { handleApiError, ok, created, readJson, readQuery, paginationSchema, BusinessRuleError } from "@/lib/api";
 import { writeAuditLog } from "@/lib/audit";
 import { toDateOnly } from "@/lib/sessions";
@@ -34,12 +33,11 @@ export async function GET(request: NextRequest) {
     const ctx = await requirePermission("sessions.view");
     const query = readQuery(request, listSchema);
     const branchIds = resolveBranchScope(ctx, query.branchId);
-    const ownGroupIds = await resolveOwnGroupIds(ctx);
 
     const where = {
       organizationId: ctx.organizationId,
       ...(branchIds ? { branchId: { in: branchIds } } : {}),
-      ...groupIdFilter(ownGroupIds, query.groupId),
+      ...(query.groupId ? { groupId: query.groupId } : {}),
       ...(query.teacherId ? { teacherId: query.teacherId } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.planId ? { planId: query.planId } : {}),

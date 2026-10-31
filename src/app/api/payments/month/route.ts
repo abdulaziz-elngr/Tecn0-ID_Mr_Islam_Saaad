@@ -7,7 +7,7 @@ import { handleApiError, created, readJson, BusinessRuleError, NotFoundError } f
 import { writeAuditLog } from "@/lib/audit";
 import { allocatePayment, computeSubscriptionStatus, nextInvoiceNumber, nextReceiptNumber, round2 } from "@/lib/billing";
 import { loadLedgerEnv, loadLedgers, serializeEntry, summarize } from "@/lib/payment-ledger";
-import { checkPayable, dueDateFor, feeForMonth, monthLabel } from "@/lib/subscription-months";
+import { checkPayable, compareYm, dueDateFor, feeForMonth, fromIndex, monthLabel, ymIndex } from "@/lib/subscription-months";
 import { dispatchEvent } from "@/lib/notifications";
 
 const schema = z.object({
@@ -30,6 +30,9 @@ const schema = z.object({
  *    employees can never pay the same month twice at the same time;
  *  - a month cannot be paid while an EARLIER month is still owing
  *    (409 OUT_OF_ORDER, with the month that must be paid first);
+ *  - a FUTURE month may be paid in advance, but only up to `advanceMonths`
+ *    ahead (Settings → Payment rules) and only in order: November can't be
+ *    paid while October is still open (422 ADVANCE_NOT_ALLOWED beyond the window);
  *  - an already-paid month is refused (409 ALREADY_PAID);
  *  - the amount charged is frozen on the Subscription row at this moment,
  *    using the grade price in force for that month;
@@ -55,6 +58,18 @@ export async function POST(request: NextRequest) {
     const target = { year: input.periodYear, month: input.periodMonth };
     const paidAt = new Date();
 
+    // Advance payment window: the current month + `advanceMonths` ahead.
+    const lastAllowed = fromIndex(ymIndex(env.current) + env.advanceMonths);
+    const isAdvance = compareYm(target, env.current) > 0;
+    if (isAdvance && compareYm(target, lastAllowed) > 0) {
+      throw new BusinessRuleError(
+        env.advanceMonths === 0
+          ? "Advance payment is disabled. Only the current month and earlier months can be paid."
+          : `Only up to ${env.advanceMonths} month(s) ahead can be paid in advance.`,
+        { status: 422, code: "ADVANCE_NOT_ALLOWED" }
+      );
+    }
+
     let result: Awaited<ReturnType<typeof attempt>> | undefined;
     for (let tries = 0; tries < 3; tries++) {
       try {
@@ -77,7 +92,7 @@ export async function POST(request: NextRequest) {
           // Serialise all payments of this student.
           await tx.$queryRaw`SELECT "id" FROM "Student" WHERE "id" = ${student!.id} FOR UPDATE`;
 
-          const ledger = (await loadLedgers(ctx.organizationId, [student!], env, tx)).get(student!.id) ?? [];
+          const ledger = (await loadLedgers(ctx.organizationId, [student!], env, tx, { advance: true })).get(student!.id) ?? [];
           const check = checkPayable(ledger, target);
           if (!check.ok) {
             if (check.reason === "OUT_OF_ORDER" && check.oldest) {
@@ -85,12 +100,6 @@ export async function POST(request: NextRequest) {
                 status: 409,
                 code: "OUT_OF_ORDER",
                 details: { oldest: serializeEntry(check.oldest) }
-              });
-            }
-            if (check.reason === "EXEMPT") {
-              throw new BusinessRuleError("This student is exempt from monthly fees for this month. No payment is due.", {
-                status: 409,
-                code: "FEE_EXEMPT"
               });
             }
             if (check.reason === "ALREADY_PAID") {
@@ -202,11 +211,11 @@ export async function POST(request: NextRequest) {
               totalAmount: amount,
               paidAmount: amount,
               remainingAmount: 0,
-              description: `Subscription ${monthLabel(target, "en")}`
+              description: `Subscription ${monthLabel(target, "en")}${isAdvance ? " (advance)" : ""}`
             }
           });
 
-          const after = (await loadLedgers(ctx.organizationId, [student!], env, tx)).get(student!.id) ?? [];
+          const after = (await loadLedgers(ctx.organizationId, [student!], env, tx, { advance: true })).get(student!.id) ?? [];
           return { payment, invoice, amount, rows, after, discount: input.discount ?? 0 };
         },
         { timeout: 15_000 }
@@ -224,6 +233,7 @@ export async function POST(request: NextRequest) {
       entityId: result.payment.id,
       afterValue: {
         month: `${target.year}-${String(target.month).padStart(2, "0")}`,
+        advance: isAdvance,
         amount: result.amount,
         discount: result.discount,
         method: input.method,
@@ -248,7 +258,7 @@ export async function POST(request: NextRequest) {
       amount: result.amount,
       monthStatus: entry?.status ?? null,
       monthRemaining: entry?.remaining ?? 0,
-      nextEligible: sum.oldest ? serializeEntry(sum.oldest) : null,
+      nextEligible: sum.nextPayable ? serializeEntry(sum.nextPayable) : null,
       totalDue: sum.totalDue
     });
   } catch (err) {

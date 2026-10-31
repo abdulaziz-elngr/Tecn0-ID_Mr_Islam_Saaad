@@ -1,9 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { randomUUID } from "crypto";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, resolveBranchScope, ForbiddenError, UnauthorizedError } from "@/lib/rbac";
-import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { generateStudentCode, isStudentCodeConflict } from "@/lib/student-code";
 import { writeAuditLog } from "@/lib/audit";
 import {
@@ -40,8 +38,8 @@ const createStudentSchema = z.object({
   parentName: z.string().trim().min(1).max(200).optional(),
   /** Guardian's contact phone. Optional: defaults to the WhatsApp number. */
   parentPhone: z.string().trim().min(3).max(30).optional(),
-  /** OPTIONAL — the guardian's WhatsApp number. When given it is still validated. */
-  parentWhatsappNumber: parentWhatsappSchema.optional(),
+  /** REQUIRED — the guardian's WhatsApp number (validated here, not just in the form). */
+  parentWhatsappNumber: parentWhatsappSchema,
   notes: z.string().trim().max(2000).optional(),
   emergencyContact: z.string().trim().max(200).optional(),
   /** Explicit administrator override to enroll past a full group's capacity (spec §3). */
@@ -61,10 +59,9 @@ function handleKnownErrors(err: unknown) {
       { status: 400 }
     );
   }
-  const errorId = randomUUID();
-  console.error(`[students] errorId=${errorId}`, err);
+  console.error("[students] internal error", err);
   return NextResponse.json(
-    { error: "Something went wrong. Please try again.", errorId },
+    { error: "Something went wrong. Please try again." },
     { status: 500 }
   );
 }
@@ -81,7 +78,6 @@ export async function GET(request: NextRequest) {
     const { page, pageSize, search, branchId, stageId, gradeId, groupId, status } = parsed.data;
 
     const branchIds = resolveBranchScope(ctx, branchId);
-    const ownGroupIds = await resolveOwnGroupIds(ctx);
 
     const where = {
       organizationId: ctx.organizationId,
@@ -90,22 +86,14 @@ export async function GET(request: NextRequest) {
       ...(status ? { status } : {}),
       ...(stageId ? { stageId } : {}),
       ...(gradeId ? { gradeId } : {}),
-      ...groupIdFilter(ownGroupIds, groupId),
+      ...(groupId ? { groupId } : {}),
       ...(search
         ? {
             OR: [
               { fullName: { contains: search, mode: "insensitive" as const } },
               { studentCode: { contains: search, mode: "insensitive" as const } },
-              { qrCode: search },
-              // Phone clauses only for digit-like input. With them in the OR, Postgres
-              // cannot use the name/code indexes at all (one of them goes through a
-              // parent join), so a plain name search scanned the whole table.
-              ...(/^[+\d\s-]{3,}$/.test(search)
-                ? [
-                    { phone: { contains: search } },
-                    { parents: { some: { parent: { phone: { contains: search } } } } }
-                  ]
-                : [])
+              { phone: { contains: search } },
+              { parents: { some: { parent: { phone: { contains: search } } } } }
             ]
           }
         : {})
@@ -208,19 +196,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const whatsappNumber = input.parentWhatsappNumber
-      ? toStoredWhatsappNumber(input.parentWhatsappNumber)
-      : undefined;
-    // The guardian is optional: a Parent row needs a phone, so one is only
-    // created/linked when a phone or WhatsApp number was actually given.
-    const hasGuardianContact = Boolean(input.parentPhone || whatsappNumber);
+    const whatsappNumber = toStoredWhatsappNumber(input.parentWhatsappNumber);
 
     // The barcode is a short numeric code (e.g. 260001). The database
     // unique constraint is the real guarantee: if two enrollments race for
     // the same number, the loser retries with the next free one.
     const createWithUniqueBarcode = async () => {
       for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-        const studentCode = await generateStudentCode(group.grade, attempt);
+        const studentCode = await generateStudentCode(attempt);
         try {
           return await db.$transaction(async (tx) => {
             const created = await tx.student.create({
@@ -247,16 +230,14 @@ export async function POST(request: NextRequest) {
 
             // Reuses the existing Parent (matched by phone) when the guardian
             // is already registered, e.g. a sibling — never a duplicate row.
-            if (hasGuardianContact) {
-              const parent = await upsertGuardian(tx, ctx.organizationId, {
-                fullName: input.parentName,
-                phone: input.parentPhone,
-                whatsappNumber
-              });
-              await tx.studentParent.create({
-                data: { studentId: created.id, parentId: parent.id, relationship: "Guardian", isPrimary: true }
-              });
-            }
+            const parent = await upsertGuardian(tx, ctx.organizationId, {
+              fullName: input.parentName,
+              phone: input.parentPhone,
+              whatsappNumber
+            });
+            await tx.studentParent.create({
+              data: { studentId: created.id, parentId: parent.id, relationship: "Guardian", isPrimary: true }
+            });
 
             return created;
           });

@@ -6,7 +6,6 @@ import { currentMonth, qs, useApi } from "@/lib/client";
 import { toAsciiDigits } from "@/lib/wa-link";
 import { weekdayLabel, formatLessonDate, fmt, monthLabel, parseMonthInput } from "@/lib/lesson-format";
 import { Field } from "@/components/ui";
-import { MonthYearPicker } from "@/components/MonthYearPicker";
 import type { PickerGroup } from "@/components/GroupPicker";
 
 /**
@@ -214,11 +213,13 @@ export function LessonPicker({
     <div className="space-y-3">
       <Field label={t("lf.month")} required>
         {(id) => (
-          <MonthYearPicker
+          <input
             id={id}
+            type="month"
+            className="input"
             value={month}
-            onChange={(v) => {
-              setMonth(v);
+            onChange={(e) => {
+              setMonth(e.target.value);
               onChange("");
             }}
           />

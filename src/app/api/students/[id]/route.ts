@@ -2,7 +2,6 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, ForbiddenError, UnauthorizedError } from "@/lib/rbac";
-import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { writeAuditLog } from "@/lib/audit";
 import {
   GuardianInputError,
@@ -84,9 +83,8 @@ export async function GET(
     const branchIds = ctx.isOrgWide ? undefined : ctx.branchIds;
 
     // Includes the primary guardian so the edit form can be pre-filled.
-    const ownGroupIds = await resolveOwnGroupIds(ctx);
     const student = await db.student.findFirst({
-      where: { ...scopeWhere(ctx.organizationId, branchIds, params.id), ...groupIdFilter(ownGroupIds) },
+      where: scopeWhere(ctx.organizationId, branchIds, params.id),
       include: {
         parents: {
           orderBy: { isPrimary: "desc" },

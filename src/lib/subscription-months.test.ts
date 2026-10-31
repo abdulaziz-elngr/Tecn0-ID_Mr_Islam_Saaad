@@ -4,6 +4,7 @@ import {
   buildLedger,
   checkPayable,
   feeForMonth,
+  nextPayable,
   outstandingMonths,
   paidMessage,
   unpaidMessage,
@@ -169,5 +170,104 @@ describe("whatsapp messages", () => {
     expect(u).toContain("300 EGP");
     const p = paidMessage({ studentName: "Ahmed", monthLabel: "October 2026", amount: 300, locale: "en" });
     expect(p).toContain("successfully paid");
+  });
+});
+
+
+describe("advance payment (future months)", () => {
+  // "Today" is 25 Oct 2026; the ledger exposes one month ahead (November).
+  const today = new Date("2026-10-25T10:00:00Z");
+  const build = (rows: SubscriptionRowLike[]) =>
+    buildLedger({
+      start: { year: 2026, month: 9 },
+      current: { year: 2026, month: 10 },
+      end: { year: 2026, month: 11 },
+      rows,
+      fees,
+      dueDay: 5,
+      now: today
+    });
+
+  it("adds the advance month after the current one and flags it as future", () => {
+    const l = build([row(9, 350, 350), row(10, 350, 350)]);
+    expect(l.map((e) => e.key)).toEqual(["2026-09", "2026-10", "2026-11"]);
+    expect(l.map((e) => e.future)).toEqual([false, false, true]);
+    expect(l[2]!.virtual).toBe(true);
+    expect(l[2]!.amount).toBe(350);
+    expect(l[2]!.status).toBe("UNPAID"); // never OVERDUE before it starts
+  });
+
+  it("without `end` the ledger stops at the current month (nothing changes for reports)", () => {
+    const l = buildLedger({ start: { year: 2026, month: 9 }, current: { year: 2026, month: 10 }, rows: [], fees, dueDay: 5, now: today });
+    expect(l.map((e) => e.key)).toEqual(["2026-09", "2026-10"]);
+    expect(l.every((e) => !e.future)).toBe(true);
+  });
+
+  it("an unpaid future month is not a debt", () => {
+    const l = build([row(9, 350, 350), row(10, 350, 350)]);
+    expect(outstandingMonths(l)).toEqual([]);
+  });
+
+  it("November can be paid in advance once September and October are paid", () => {
+    const l = build([row(9, 350, 350), row(10, 350, 350)]);
+    const r = checkPayable(l, { year: 2026, month: 11 });
+    expect(r.ok).toBe(true);
+    expect(nextPayable(l)?.key).toBe("2026-11");
+  });
+
+  it("November is refused while October is still unpaid (oldest-first still applies)", () => {
+    const l = build([row(9, 350, 350)]);
+    const r = checkPayable(l, { year: 2026, month: 11 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("OUT_OF_ORDER");
+      expect(r.oldest?.key).toBe("2026-10");
+    }
+    expect(nextPayable(l)?.key).toBe("2026-10");
+  });
+
+  it("a month beyond the advance window is not in the ledger", () => {
+    const l = build([row(9, 350, 350), row(10, 350, 350)]);
+    const r = checkPayable(l, { year: 2026, month: 12 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("NOT_IN_LEDGER");
+  });
+
+  it("with two advance months, December waits for November", () => {
+    const l = buildLedger({
+      start: { year: 2026, month: 10 },
+      current: { year: 2026, month: 10 },
+      end: { year: 2026, month: 12 },
+      rows: [row(10, 350, 350)],
+      fees,
+      dueDay: 5,
+      now: today
+    });
+    const r = checkPayable(l, { year: 2026, month: 12 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.oldest?.key).toBe("2026-11");
+  });
+
+  it("an already paid advance month is refused and nothing is next", () => {
+    const l = build([row(9, 350, 350), row(10, 350, 350), row(11, 350, 350)]);
+    const r = checkPayable(l, { year: 2026, month: 11 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("ALREADY_PAID");
+    expect(nextPayable(l)).toBeNull();
+  });
+
+  it("an advance month without any price cannot be taken", () => {
+    const l = buildLedger({
+      start: { year: 2026, month: 10 },
+      current: { year: 2026, month: 10 },
+      end: { year: 2026, month: 11 },
+      rows: [row(10, 350, 350)],
+      fees: [],
+      dueDay: 5,
+      now: today
+    });
+    // A zero-priced month reads as settled, so it can neither be charged nor offered as "next".
+    expect(checkPayable(l, { year: 2026, month: 11 }).ok).toBe(false);
+    expect(nextPayable(l)).toBeNull();
   });
 });

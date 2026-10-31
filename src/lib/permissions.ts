@@ -18,10 +18,7 @@ export const PERMISSIONS = {
     "employees.attendance.view",
     "employees.attendance.manage"
   ],
-  // "lessons.plan" = form (تشكيل) and delete monthly lesson plans, always limited to the
-  // caller's own groups for teaching logins. Unlike "sessions.create" it cannot create
-  // ad-hoc sessions or generate sessions for other groups.
-  sessions: ["sessions.view", "sessions.create", "sessions.update", "lessons.plan"],
+  sessions: ["sessions.view", "sessions.create", "sessions.update"],
   attendance: [
     "attendance.view",
     "attendance.create",
@@ -41,10 +38,6 @@ export const PERMISSIONS = {
     "invoices.view",
     "invoices.void"
   ],
-  // "خصم مبلغ": money taken out of the treasury. Totals everywhere are computed from ACTIVE rows.
-  deductions: ["deductions.view", "deductions.create", "deductions.void"],
-  // حجوزات الكتب والمذكرات
-  books: ["books.view", "books.create", "books.update", "books.collect", "books.void"],
   exams: [
     "exams.view",
     "exams.create",
@@ -99,8 +92,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     ...PERMISSIONS.sessions,
     ...PERMISSIONS.attendance,
     ...PERMISSIONS.payments,
-    ...PERMISSIONS.deductions,
-    ...PERMISSIONS.books,
     ...PERMISSIONS.exams,
     ...PERMISSIONS.performance,
     ...PERMISSIONS.communication,
@@ -108,22 +99,15 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     ...PERMISSIONS.academic,
     "audit_logs.view"
   ],
-  // ACCOUNTANT — everything about money, for every student / stage / group:
-  // payments, subscriptions, invoices, financial reports, and the monthly price of
-  // each grade (academic.fees.manage). To work with payers he can also LOOK at
-  // students, their parents and the groups (read-only: no students.update / create /
-  // delete, no academic.groups.manage). No attendance, exams or teacher access.
   ACCOUNTANT: [
     ...PERMISSIONS.payments,
-    ...PERMISSIONS.deductions,
-    ...PERMISSIONS.books,
-    "academic.fees.manage",
     "students.view",
-    "parents.view",
+    "reports.view",
     "reports.financial.view",
-    "reports.export"
+    "reports.export",
+    "notifications.view"
   ],
-  // TEACHER — own groups only (enforced in src/lib/group-access.ts).
+  // Teachers deliberately get NO financial or user-management keys (spec §23).
   TEACHER: [
     "students.view",
     "sessions.view",
@@ -142,28 +126,13 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     "performance.recognize",
     "reports.view"
   ],
-  // TEACHER_ASSISTANT — everything about the group(s) he is responsible for:
-  // attendance, recitation, homework, exams/grades and student performance.
-  // Never finance, users, settings or other groups (group scoping is enforced
-  // on the server by resolveOwnGroupIds in src/lib/group-access.ts).
   TEACHER_ASSISTANT: [
     "students.view",
     "sessions.view",
     "attendance.view",
     "attendance.create",
-    "exams.view",
-    "exams.create",
-    "exams.update",
-    "grades.enter",
-    "grades.update",
     "recitation.view",
-    "recitation.manage",
-    "assignments.view",
-    "assignments.manage",
-    "performance.view",
-    "performance.recognize",
-    // Forms the monthly lessons (تشكيل الحصص) of his own group(s) only.
-    "lessons.plan"
+    "recitation.manage"
   ],
   RECEPTIONIST: [
     "students.view",
@@ -180,10 +149,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     "payments.reprint",
     "subscriptions.view",
     "invoices.view",
-    "notifications.view",
-    // Books: can look at reservations and collect money, never create/void.
-    "books.view",
-    "books.collect"
+    "notifications.view"
   ],
   ATTENDANCE_OPERATOR: ["students.view", "sessions.view", "attendance.view", "attendance.create"],
   PARENT: [],

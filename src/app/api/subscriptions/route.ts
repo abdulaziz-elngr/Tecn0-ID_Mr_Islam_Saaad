@@ -4,10 +4,7 @@ import { db } from "@/lib/db";
 import { requirePermission, resolveBranchScope } from "@/lib/rbac";
 import { handleApiError, ok, created, readJson, readQuery, paginationSchema, BusinessRuleError } from "@/lib/api";
 import { writeAuditLog } from "@/lib/audit";
-import { computeSubscriptionStatus, netDue, remainingAmount, round2 } from "@/lib/billing";
-import { getCenterProfile } from "@/lib/settings";
-import { exemptionWindowOf } from "@/lib/payment-ledger";
-import { inExemption } from "@/lib/subscription-months";
+import { computeSubscriptionStatus, netDue, remainingAmount } from "@/lib/billing";
 
 const listSchema = paginationSchema.extend({
   branchId: z.string().uuid().optional(),
@@ -45,7 +42,7 @@ export async function GET(request: NextRequest) {
       ...(query.periodMonth ? { periodMonth: query.periodMonth } : {})
     };
 
-    const [total, rows, totals, waivedTotals] = await Promise.all([
+    const [total, rows, totals] = await Promise.all([
       db.subscription.count({ where }),
       db.subscription.findMany({
         where,
@@ -56,21 +53,11 @@ export async function GET(request: NextRequest) {
           student: { select: { id: true, fullName: true, studentCode: true } }
         }
       }),
-      // Open months: what is billed is amount - discount.
-      db.subscription.aggregate({
-        where: { AND: [where, { status: { not: "WAIVED" } }] },
-        _sum: { amount: true, discount: true, paidAmount: true }
-      }),
-      // Waived (exempt) months owe nothing: only money really collected on them counts.
-      db.subscription.aggregate({
-        where: { AND: [where, { status: "WAIVED" }] },
-        _sum: { paidAmount: true }
-      })
+      db.subscription.aggregate({ where, _sum: { amount: true, discount: true, paidAmount: true } })
     ]);
 
-    const waivedPaid = Number(waivedTotals._sum.paidAmount ?? 0);
-    const billed = round2(netDue(Number(totals._sum.amount ?? 0), Number(totals._sum.discount ?? 0)) + waivedPaid);
-    const collected = round2(Number(totals._sum.paidAmount ?? 0) + waivedPaid);
+    const billed = netDue(Number(totals._sum.amount ?? 0), Number(totals._sum.discount ?? 0));
+    const collected = Number(totals._sum.paidAmount ?? 0);
 
     return ok({
       subscriptions: rows.map((s) => ({
@@ -82,8 +69,7 @@ export async function GET(request: NextRequest) {
         amount: Number(s.amount),
         discount: Number(s.discount),
         paidAmount: Number(s.paidAmount),
-        remaining:
-          s.status === "WAIVED" ? 0 : remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount)),
+        remaining: remainingAmount(Number(s.amount), Number(s.discount), Number(s.paidAmount)),
         dueDate: s.dueDate,
         status: s.status,
         notes: s.notes
@@ -108,7 +94,7 @@ export async function POST(request: NextRequest) {
 
     const student = await db.student.findFirst({
       where: { id: input.studentId, organizationId: ctx.organizationId, deletedAt: null },
-      select: { id: true, branchId: true, feeExempt: true, feeExemptFrom: true, feeExemptUntil: true }
+      select: { id: true, branchId: true }
     });
     if (!student) throw new BusinessRuleError("Student not found.", { status: 404 });
     resolveBranchScope(ctx, student.branchId);
@@ -143,11 +129,6 @@ export async function POST(request: NextRequest) {
     }
 
     const dueDate = new Date(input.dueDate);
-    const timeZone = (await getCenterProfile(ctx.organizationId)).timezone || "Africa/Cairo";
-    const exemptMonth = inExemption(exemptionWindowOf(student, timeZone), {
-      year: input.periodYear,
-      month: input.periodMonth
-    });
     const subscription = await db.subscription.create({
       data: {
         organizationId: ctx.organizationId,
@@ -160,14 +141,11 @@ export async function POST(request: NextRequest) {
         discount: input.discount,
         dueDate,
         notes: input.notes,
-        // A month inside the student's fee exemption is created already waived.
-        exemptWaived: exemptMonth,
         status: computeSubscriptionStatus({
           amount: input.amount,
           discount: input.discount,
           paidAmount: 0,
-          dueDate,
-          waived: exemptMonth
+          dueDate
         })
       }
     });

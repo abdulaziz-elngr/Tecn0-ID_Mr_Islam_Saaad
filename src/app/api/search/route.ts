@@ -1,4 +1,3 @@
-import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -17,9 +16,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 const querySchema = z.object({
   q: z.string().trim().min(2).max(100),
   branchId: z.string().uuid().optional(),
-  limit: z.coerce.number().int().min(1).max(10).default(5),
-  /** "students" = only the student block (the attendance screen) — 1 query instead of 5. */
-  scope: z.enum(["all", "students"]).default("all")
+  limit: z.coerce.number().int().min(1).max(10).default(5)
 });
 
 export async function GET(request: NextRequest) {
@@ -34,13 +31,8 @@ export async function GET(request: NextRequest) {
 
     const query = readQuery(request, querySchema);
     const branchIds = resolveBranchScope(ctx, query.branchId);
-    const ownGroupIds = await resolveOwnGroupIds(ctx);
     const term = query.q;
     const insensitive = { contains: term, mode: "insensitive" as const };
-    const only = query.scope === "students";
-    // Phone clauses only make sense for digit-like input; skipping them for a name
-    // search avoids two extra LIKE scans (one of them through a join).
-    const looksLikePhone = /^[+\d\s-]{3,}$/.test(term);
 
     const [students, teachers, groups, parents, invoices] = await Promise.all([
       ctx.permissions.has("students.view")
@@ -49,17 +41,12 @@ export async function GET(request: NextRequest) {
               organizationId: ctx.organizationId,
               deletedAt: null,
               ...(branchIds ? { branchId: { in: branchIds } } : {}),
-              ...groupIdFilter(ownGroupIds),
               OR: [
                 { fullName: insensitive },
                 { studentCode: insensitive },
                 { qrCode: term },
-                ...(looksLikePhone
-                  ? [
-                      { phone: { contains: term } },
-                      { parents: { some: { parent: { phone: { contains: term } } } } }
-                    ]
-                  : [])
+                { phone: { contains: term } },
+                { parents: { some: { parent: { phone: { contains: term } } } } }
               ]
             },
             take: query.limit,
@@ -74,7 +61,7 @@ export async function GET(request: NextRequest) {
             }
           })
         : [],
-      !only && ctx.permissions.has("teachers.view")
+      ctx.permissions.has("teachers.view")
         ? db.teacher.findMany({
             where: {
               organizationId: ctx.organizationId,
@@ -86,13 +73,12 @@ export async function GET(request: NextRequest) {
             select: { id: true, fullName: true, phone: true, isAssistant: true }
           })
         : [],
-      !only && ctx.permissions.has("students.view")
+      ctx.permissions.has("students.view")
         ? db.group.findMany({
             where: {
               deletedAt: null,
               branch: { center: { organizationId: ctx.organizationId } },
               ...(branchIds ? { branchId: { in: branchIds } } : {}),
-              ...(ownGroupIds ? { id: { in: ownGroupIds } } : {}),
               name: insensitive
             },
             take: query.limit,
@@ -101,7 +87,7 @@ export async function GET(request: NextRequest) {
             select: { id: true, name: true, grade: { select: { name: true } } }
           })
         : [],
-      !only && ctx.permissions.has("parents.view")
+      ctx.permissions.has("parents.view")
         ? db.parent.findMany({
             where: {
               OR: [{ fullName: insensitive }, { phone: { contains: term } }],
@@ -119,7 +105,7 @@ export async function GET(request: NextRequest) {
             select: { id: true, fullName: true, phone: true }
           })
         : [],
-      !only && ctx.permissions.has("invoices.view")
+      ctx.permissions.has("invoices.view")
         ? db.invoice.findMany({
             where: {
               organizationId: ctx.organizationId,

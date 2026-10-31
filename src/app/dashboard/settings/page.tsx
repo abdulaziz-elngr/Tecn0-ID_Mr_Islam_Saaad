@@ -26,6 +26,7 @@ interface SettingsData {
     defaultMonthlyAmount: number;
     dueDayOfMonth: number;
     allowPartialPayments: boolean;
+    advanceMonths: number;
   };
   analyticsThresholds: {
     lowAttendancePercent: number;
@@ -229,6 +230,19 @@ export default function SettingsPage() {
                 className="input"
                 value={form.paymentRules.dueDayOfMonth}
                 onChange={(e) => setForm({ ...form, paymentRules: { ...form.paymentRules, dueDayOfMonth: Number(e.target.value) } })}
+              />
+            )}
+          </Field>
+          <Field label={t("settings.advanceMonths")}>
+            {(id) => (
+              <input
+                id={id}
+                type="number"
+                min={0}
+                max={12}
+                className="input"
+                value={form.paymentRules.advanceMonths ?? 1}
+                onChange={(e) => setForm({ ...form, paymentRules: { ...form.paymentRules, advanceMonths: Number(e.target.value) } })}
               />
             )}
           </Field>

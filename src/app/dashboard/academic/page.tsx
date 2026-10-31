@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useMemo, useState, type FormEvent } from "react";
 import { useI18n } from "@/lib/i18n";
-import { usePermissions } from "@/components/PermissionsProvider";
 import { apiDelete, apiPatch, apiPost, useApi } from "@/lib/client";
 import { Badge, ConfirmDialog, ErrorNotice, Field, Modal, PageHeader, useToast } from "@/components/ui";
 
@@ -40,8 +39,6 @@ interface GroupRow {
   subject: { id: string; name: string; code: string | null } | null;
   teacher: StaffOption | null;
   assistant: StaffOption | null;
-  /** Every assistant of the group (several may share one group). */
-  assistants?: StaffOption[];
   schedules: { dayOfWeek: string; startMinutes: number; endMinutes: number }[];
 }
 
@@ -52,7 +49,7 @@ interface FormState {
   name: string;
   capacity: number;
   teacherId: string;
-  assistantIds: string[];
+  assistantId: string;
   notes: string;
 }
 
@@ -63,7 +60,7 @@ const EMPTY_FORM: FormState = {
   name: "",
   capacity: 20,
   teacherId: "",
-  assistantIds: [],
+  assistantId: "",
   notes: ""
 };
 
@@ -87,21 +84,11 @@ const NO_SUBJECT_KEY = "__none__";
 export default function GroupsPage() {
   const { t } = useI18n();
   const toast = useToast();
-  const { has, loaded } = usePermissions();
-  // Read-only viewers (e.g. the accountant) see the list but not the edit tools, and
-  // never trigger the subject / teacher lookups they are not allowed to call.
-  const canManage = has("academic.groups.manage");
   const { data: groups, loading, error, reload } = useApi<GroupRow[]>("/api/groups");
   const { data: stages } = useApi<StageOption[]>("/api/stages");
-  const { data: subjects, error: subjectsError } = useApi<SubjectOption[]>(
-    loaded && canManage ? "/api/subjects" : null
-  );
-  const { data: teacherList } = useApi<StaffOption[]>(
-    loaded && canManage ? "/api/teachers?pageSize=100&isAssistant=false" : null
-  );
-  const { data: assistantList } = useApi<StaffOption[]>(
-    loaded && canManage ? "/api/teachers?pageSize=100&isAssistant=true" : null
-  );
+  const { data: subjects, error: subjectsError } = useApi<SubjectOption[]>("/api/subjects");
+  const { data: teacherList } = useApi<StaffOption[]>("/api/teachers?pageSize=100&isAssistant=false");
+  const { data: assistantList } = useApi<StaffOption[]>("/api/teachers?pageSize=100&isAssistant=true");
 
   // Filters
   const [search, setSearch] = useState("");
@@ -149,7 +136,7 @@ export default function GroupsPage() {
       if (fSubject && g.subject?.id !== fSubject) return false;
       if (fTeacher && g.teacher?.id !== fTeacher) return false;
       if (q) {
-        const haystack = [g.name, g.subject?.name, g.subject?.code, g.teacher?.fullName, ...(g.assistants ?? []).map((a) => a.fullName)]
+        const haystack = [g.name, g.subject?.name, g.subject?.code, g.teacher?.fullName, g.assistant?.fullName]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
@@ -200,7 +187,7 @@ export default function GroupsPage() {
       name: g.name,
       capacity: g.capacity,
       teacherId: g.teacher?.id ?? "",
-      assistantIds: (g.assistants ?? (g.assistant ? [g.assistant] : [])).map((a) => a.id),
+      assistantId: g.assistant?.id ?? "",
       notes: g.notes ?? ""
     });
     setFormError(null);
@@ -223,7 +210,7 @@ export default function GroupsPage() {
           capacity: form.capacity,
           subjectId: form.subjectId,
           teacherId: form.teacherId || null,
-          assistantIds: form.assistantIds,
+          assistantId: form.assistantId || null,
           notes: form.notes.trim()
         });
         toast.success(t("common.saved"));
@@ -240,7 +227,7 @@ export default function GroupsPage() {
           name: form.name.trim(),
           capacity: form.capacity,
           teacherId: form.teacherId || undefined,
-          assistantIds: form.assistantIds,
+          assistantId: form.assistantId || undefined,
           notes: form.notes.trim() || undefined
         });
         toast.success(t("common.created"));
@@ -294,11 +281,9 @@ export default function GroupsPage() {
       <PageHeader
         title={t("nav.groups")}
         actions={
-          canManage ? (
-            <button type="button" className="btn-primary" onClick={openCreate}>
-              {t("groups.add")}
-            </button>
-          ) : undefined
+          <button type="button" className="btn-primary" onClick={openCreate}>
+            {t("groups.add")}
+          </button>
         }
       />
 
@@ -450,7 +435,6 @@ export default function GroupsPage() {
                                 : t("groups.noSchedule")}
                             </p>
                           </Link>
-                          {canManage && (
                           <div className="mt-3 flex flex-wrap gap-3 border-t border-black/5 pt-2 text-xs dark:border-white/10">
                             <button type="button" className="hover:underline" onClick={() => openEdit(g)}>
                               {t("common.edit")}
@@ -466,7 +450,6 @@ export default function GroupsPage() {
                               {t("common.delete")}
                             </button>
                           </div>
-                          )}
                         </div>
                       ))}
                     </div>
@@ -580,26 +563,20 @@ export default function GroupsPage() {
             )}
           </Field>
           <Field label={t("groups.assistant")}>
-            {() => (
-              // Several assistants can share one group: tick every one that works in it.
-              <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-black/10 p-2 dark:border-white/10">
-                {(assistantList ?? []).length === 0 && <p className="text-xs text-black/50 dark:text-white/50">—</p>}
+            {(id) => (
+              <select
+                id={id}
+                className="input"
+                value={form.assistantId}
+                onChange={(e) => setField("assistantId", e.target.value)}
+              >
+                <option value="">—</option>
                 {(assistantList ?? []).map((x) => (
-                  <label key={x.id} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={form.assistantIds.includes(x.id)}
-                      onChange={(e) =>
-                        setField(
-                          "assistantIds",
-                          e.target.checked ? [...form.assistantIds, x.id] : form.assistantIds.filter((i) => i !== x.id)
-                        )
-                      }
-                    />
+                  <option key={x.id} value={x.id}>
                     {x.fullName}
-                  </label>
+                  </option>
                 ))}
-              </div>
+              </select>
             )}
           </Field>
           <Field label={t("common.notes")}>

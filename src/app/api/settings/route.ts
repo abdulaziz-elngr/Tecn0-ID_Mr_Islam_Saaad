@@ -11,8 +11,7 @@ import {
   getLateThresholdMinutes,
   getMakeUpRules,
   getPaymentRules,
-  setSetting,
-  clearSettingsCache
+  setSetting
 } from "@/lib/settings";
 import { handleApiError, ok, readJson } from "@/lib/api";
 
@@ -42,7 +41,8 @@ const updateSchema = z.object({
     .object({
       defaultMonthlyAmount: z.number().min(0).max(1_000_000).optional(),
       dueDayOfMonth: z.number().int().min(1).max(28).optional(),
-      allowPartialPayments: z.boolean().optional()
+      allowPartialPayments: z.boolean().optional(),
+      advanceMonths: z.number().int().min(0).max(12).optional()
     })
     .optional(),
   analyticsThresholds: z
@@ -100,7 +100,6 @@ export async function PATCH(request: NextRequest) {
       });
       if (center) {
         await db.center.update({ where: { id: center.id }, data: input.center });
-        clearSettingsCache();
       }
     }
 

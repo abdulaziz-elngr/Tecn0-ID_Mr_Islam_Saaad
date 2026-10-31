@@ -2,7 +2,6 @@ import { type NextRequest } from "next/server";
 import QRCode from "qrcode";
 import { db } from "@/lib/db";
 import { requirePermission } from "@/lib/rbac";
-import { groupIdFilter, resolveOwnGroupIds } from "@/lib/group-access";
 import { handleApiError, NotFoundError } from "@/lib/api";
 
 /**
@@ -16,14 +15,12 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
   try {
     const ctx = await requirePermission("students.view");
 
-    const ownGroupIds = await resolveOwnGroupIds(ctx);
     const student = await db.student.findFirst({
       where: {
         id: params.id,
         organizationId: ctx.organizationId,
         deletedAt: null,
-        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } }),
-        ...groupIdFilter(ownGroupIds)
+        ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
       },
       select: { qrCode: true }
     });
