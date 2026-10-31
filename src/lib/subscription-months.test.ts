@@ -4,9 +4,10 @@ import {
   buildLedger,
   checkPayable,
   feeForMonth,
-  nextPayable,
   outstandingMonths,
+  overdueMonths,
   paidMessage,
+  payableKeys,
   unpaidMessage,
   type SubscriptionRowLike
 } from "./subscription-months";
@@ -173,101 +174,73 @@ describe("whatsapp messages", () => {
   });
 });
 
+describe("advance payment (months after the current one)", () => {
+  // Today is 25 Oct 2026; October is paid, November/December/January are in the future.
+  const base = {
+    start: { year: 2026, month: 9 },
+    current: { year: 2026, month: 10 },
+    fees,
+    dueDay: 5,
+    now: new Date("2026-10-25T10:00:00Z"),
+    ahead: 3
+  };
+  const paidUntilOct = [row(9, 350, 350), row(10, 350, 350)];
 
-describe("advance payment (future months)", () => {
-  // "Today" is 25 Oct 2026; the ledger exposes one month ahead (November).
-  const today = new Date("2026-10-25T10:00:00Z");
-  const build = (rows: SubscriptionRowLike[]) =>
-    buildLedger({
-      start: { year: 2026, month: 9 },
-      current: { year: 2026, month: 10 },
-      end: { year: 2026, month: 11 },
-      rows,
-      fees,
-      dueDay: 5,
-      now: today
-    });
-
-  it("adds the advance month after the current one and flags it as future", () => {
-    const l = build([row(9, 350, 350), row(10, 350, 350)]);
-    expect(l.map((e) => e.key)).toEqual(["2026-09", "2026-10", "2026-11"]);
-    expect(l.map((e) => e.future)).toEqual([false, false, true]);
-    expect(l[2]!.virtual).toBe(true);
-    expect(l[2]!.amount).toBe(350);
-    expect(l[2]!.status).toBe("UNPAID"); // never OVERDUE before it starts
+  it("adds the next months flagged as future and never counts them as debt", () => {
+    const ledger = buildLedger({ ...base, rows: paidUntilOct });
+    expect(ledger.map((e) => e.key)).toEqual(["2026-09", "2026-10", "2026-11", "2026-12", "2027-01"]);
+    expect(ledger.filter((e) => e.future).map((e) => e.key)).toEqual(["2026-11", "2026-12", "2027-01"]);
+    expect(ledger.find((e) => e.key === "2026-11")!.status).toBe("UNPAID");
+    expect(outstandingMonths(ledger)).toEqual([]);
+    expect(overdueMonths(ledger)).toEqual([]);
   });
 
-  it("without `end` the ledger stops at the current month (nothing changes for reports)", () => {
-    const l = buildLedger({ start: { year: 2026, month: 9 }, current: { year: 2026, month: 10 }, rows: [], fees, dueDay: 5, now: today });
-    expect(l.map((e) => e.key)).toEqual(["2026-09", "2026-10"]);
-    expect(l.every((e) => !e.future)).toBe(true);
+  it("without `ahead` the ledger still stops at the current month (nothing else changes)", () => {
+    const ledger = buildLedger({ ...base, ahead: undefined, rows: paidUntilOct });
+    expect(ledger.map((e) => e.key)).toEqual(["2026-09", "2026-10"]);
+    expect(ledger.some((e) => e.future)).toBe(false);
   });
 
-  it("an unpaid future month is not a debt", () => {
-    const l = build([row(9, 350, 350), row(10, 350, 350)]);
-    expect(outstandingMonths(l)).toEqual([]);
+  it("November can be paid on 25 October once October is settled", () => {
+    const ledger = buildLedger({ ...base, rows: paidUntilOct });
+    const check = checkPayable(ledger, { year: 2026, month: 11 });
+    expect(check.ok).toBe(true);
+    if (check.ok) expect(check.entry.amount).toBe(350);
+    expect(payableKeys(ledger)).toEqual(["2026-11"]);
   });
 
-  it("November can be paid in advance once September and October are paid", () => {
-    const l = build([row(9, 350, 350), row(10, 350, 350)]);
-    const r = checkPayable(l, { year: 2026, month: 11 });
-    expect(r.ok).toBe(true);
-    expect(nextPayable(l)?.key).toBe("2026-11");
-  });
-
-  it("November is refused while October is still unpaid (oldest-first still applies)", () => {
-    const l = build([row(9, 350, 350)]);
-    const r = checkPayable(l, { year: 2026, month: 11 });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.reason).toBe("OUT_OF_ORDER");
-      expect(r.oldest?.key).toBe("2026-10");
+  it("November cannot be paid while October is still owing", () => {
+    const ledger = buildLedger({ ...base, rows: [row(9, 350, 350), row(10, 100, 350)] });
+    const check = checkPayable(ledger, { year: 2026, month: 11 });
+    expect(check.ok).toBe(false);
+    if (!check.ok) {
+      expect(check.reason).toBe("OUT_OF_ORDER");
+      expect(check.oldest?.key).toBe("2026-10");
     }
-    expect(nextPayable(l)?.key).toBe("2026-10");
   });
 
-  it("a month beyond the advance window is not in the ledger", () => {
-    const l = build([row(9, 350, 350), row(10, 350, 350)]);
-    const r = checkPayable(l, { year: 2026, month: 12 });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe("NOT_IN_LEDGER");
+  it("December cannot be paid in advance before November", () => {
+    const ledger = buildLedger({ ...base, rows: paidUntilOct });
+    const check = checkPayable(ledger, { year: 2026, month: 12 });
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.oldest?.key).toBe("2026-11");
   });
 
-  it("with two advance months, December waits for November", () => {
-    const l = buildLedger({
-      start: { year: 2026, month: 10 },
-      current: { year: 2026, month: 10 },
-      end: { year: 2026, month: 12 },
-      rows: [row(10, 350, 350)],
-      fees,
-      dueDay: 5,
-      now: today
-    });
-    const r = checkPayable(l, { year: 2026, month: 12 });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.oldest?.key).toBe("2026-11");
+  it("once November is paid, December becomes the next advance month", () => {
+    const ledger = buildLedger({ ...base, rows: [...paidUntilOct, row(11, 350, 350)] });
+    expect(ledger.find((e) => e.key === "2026-11")!.status).toBe("PAID");
+    expect(payableKeys(ledger)).toEqual(["2026-12"]);
   });
 
-  it("an already paid advance month is refused and nothing is next", () => {
-    const l = build([row(9, 350, 350), row(10, 350, 350), row(11, 350, 350)]);
-    const r = checkPayable(l, { year: 2026, month: 11 });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe("ALREADY_PAID");
-    expect(nextPayable(l)).toBeNull();
+  it("does not offer months beyond the allowed advance window", () => {
+    const ledger = buildLedger({ ...base, rows: paidUntilOct });
+    expect(checkPayable(ledger, { year: 2027, month: 3 })).toEqual({ ok: false, reason: "NOT_IN_LEDGER" });
   });
 
-  it("an advance month without any price cannot be taken", () => {
-    const l = buildLedger({
-      start: { year: 2026, month: 10 },
-      current: { year: 2026, month: 10 },
-      end: { year: 2026, month: 11 },
-      rows: [row(10, 350, 350)],
-      fees: [],
-      dueDay: 5,
-      now: today
-    });
-    // A zero-priced month reads as settled, so it can neither be charged nor offered as "next".
-    expect(checkPayable(l, { year: 2026, month: 11 }).ok).toBe(false);
-    expect(nextPayable(l)).toBeNull();
+  it("a fee exemption still waives future months", () => {
+    const ledger = buildLedger({ ...base, rows: paidUntilOct, exemption: { from: { year: 2026, month: 11 }, until: null } });
+    const check = checkPayable(ledger, { year: 2026, month: 11 });
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.reason).toBe("EXEMPT");
   });
 });

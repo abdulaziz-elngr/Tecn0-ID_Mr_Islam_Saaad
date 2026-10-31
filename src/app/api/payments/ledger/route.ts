@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { requirePermission, resolveBranchScope } from "@/lib/rbac";
 import { handleApiError, ok, readQuery, NotFoundError } from "@/lib/api";
 import { loadLedgerEnv, loadLedgers, serializeEntry, summarize } from "@/lib/payment-ledger";
+import { payableKeys } from "@/lib/subscription-months";
 
 const querySchema = z.object({ studentId: z.string().uuid() });
 
@@ -36,7 +37,8 @@ export async function GET(request: NextRequest) {
     resolveBranchScope(ctx, student.branchId);
 
     const env = await loadLedgerEnv(ctx.organizationId);
-    const ledger = (await loadLedgers(ctx.organizationId, [student], env, undefined, { advance: true })).get(student.id) ?? [];
+    const ledger =
+      (await loadLedgers(ctx.organizationId, [student], env, undefined, { includeFuture: true })).get(student.id) ?? [];
     const sum = summarize(ledger);
 
     return ok({
@@ -59,10 +61,11 @@ export async function GET(request: NextRequest) {
       dueDay: env.dueDay,
       allowPartial: env.allowPartial,
       current: env.current,
-      advanceMonths: env.advanceMonths,
       ledger: ledger.map(serializeEntry),
       outstanding: sum.outstanding.map(serializeEntry),
-      nextEligible: sum.nextPayable ? serializeEntry(sum.nextPayable) : null,
+      nextEligible: sum.oldest ? serializeEntry(sum.oldest) : null,
+      /** Months that can be paid right now, including advance (future) months in order. */
+      payable: payableKeys(ledger),
       totalDue: sum.totalDue,
       lastPaidMonth: sum.lastPaidMonth,
       canRecord: ctx.permissions.has("payments.create"),

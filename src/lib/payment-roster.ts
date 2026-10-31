@@ -119,7 +119,7 @@ export async function loadRoster(f: RosterFilters): Promise<Roster> {
     students.map((s) => ({ id: s.id, gradeId: s.gradeId, enrollmentDate: s.enrollmentDate })),
     env,
     undefined,
-    { advance: true } // so the roster can also show an allowed advance month
+    { includeFuture: true }
   );
 
   // Payment details for months that are paid (one query for the whole page).

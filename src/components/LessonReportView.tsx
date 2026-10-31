@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { hasDictKey, useI18n } from "@/lib/i18n";
-import { apiGet, apiPost, useApi } from "@/lib/client";
+import { apiGet, apiPost, qs, useApi } from "@/lib/client";
 import {
   fmt,
   formatClock,
@@ -14,7 +14,6 @@ import {
   weekdayLabel
 } from "@/lib/lesson-format";
 import { Badge, ConfirmDialog, ErrorNotice, Field, Modal, StatCard, useToast } from "@/components/ui";
-import { useMyPermissions } from "@/components/performance/shared";
 import { attendanceTone, feeTone } from "@/components/StudentSnapshotCard";
 import { renderTemplate } from "@/lib/templates";
 import { buildWhatsAppLink } from "@/lib/wa-link";
@@ -105,11 +104,10 @@ export function LessonReportView({
   const { data, loading, error, reload } = useApi<Report>(`/api/sessions/${sessionId}/report`);
   const { data: templates } = useApi<WATemplate[]>("/api/whatsapp/templates");
 
-  const perms = useMyPermissions();
   const [busy, setBusy] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [addFor, setAddFor] = useState<{ open: boolean; student: PickedStudent | null }>({ open: false, student: null });
   const errText = (err: unknown) => localizeError(err, t as (key: never) => string, hasDictKey);
 
   if (loading && !data) return <p className="text-sm text-black/50 dark:text-white/50">{t("common.loading")}</p>;
@@ -240,8 +238,8 @@ export function LessonReportView({
               {t("lesson.close")}
             </button>
           )}
-          {lesson.status === "COMPLETED" && (perms.has("attendance.update") || perms.has("attendance.create") || perms.has("sessions.update")) && (
-            <button type="button" className="btn-secondary" onClick={() => setAddOpen(true)}>
+          {lesson.status === "COMPLETED" && (
+            <button type="button" className="btn-secondary" onClick={() => setAddFor({ open: true, student: null })}>
               {t("lesson.addStudent")}
             </button>
           )}
@@ -370,11 +368,27 @@ export function LessonReportView({
                 {s.fullName} <Code>{s.studentCode}</Code>
               </td>
               <td className={`${td} no-print`}>
-                {s.parent && (
-                  <button type="button" className="text-xs text-emerald-600 hover:underline dark:text-emerald-400" onClick={() => sendWhatsApp(s, "absent")}>
-                    WhatsApp
-                  </button>
-                )}
+                <div className="flex flex-wrap gap-3">
+                  {lesson.status === "COMPLETED" && (
+                    <button
+                      type="button"
+                      className="text-xs text-tecno-gold-dark hover:underline dark:text-tecno-gold"
+                      onClick={() =>
+                        setAddFor({
+                          open: true,
+                          student: { id: s.studentId, fullName: s.fullName, studentCode: s.studentCode, groupId: data.group.id }
+                        })
+                      }
+                    >
+                      {t("lesson.markPresent")}
+                    </button>
+                  )}
+                  {s.parent && (
+                    <button type="button" className="text-xs text-emerald-600 hover:underline dark:text-emerald-400" onClick={() => sendWhatsApp(s, "absent")}>
+                      WhatsApp
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
@@ -457,13 +471,14 @@ export function LessonReportView({
         </div>
       </div>
 
-      {addOpen && (
-        <AddStudentDialog
+      {addFor.open && (
+        <AddStudentModal
           sessionId={sessionId}
           groupId={data.group.id}
-          onClose={() => setAddOpen(false)}
+          initial={addFor.student}
+          onClose={() => setAddFor({ open: false, student: null })}
           onAdded={() => {
-            setAddOpen(false);
+            setAddFor({ open: false, student: null });
             toast.success(t("lesson.studentAdded"));
             reload();
             onChanged?.();
@@ -481,166 +496,6 @@ export function LessonReportView({
         onConfirm={() => act("close")}
       />
     </div>
-  );
-}
-
-
-interface FoundStudent {
-  id: string;
-  fullName: string;
-  studentCode: string;
-  group: { id: string; name: string };
-}
-
-type AddType = "REGULAR" | "LATE" | "EXCUSED" | "MAKE_UP";
-
-/**
- * Adds a student to a lesson that is already closed (attendance was never taken for
- * them, or close marked them absent). The API needs `attendance.update` and a reason,
- * and logs the change in the audit trail.
- */
-function AddStudentDialog({
-  sessionId,
-  groupId,
-  onClose,
-  onAdded
-}: {
-  sessionId: string;
-  groupId: string;
-  onClose: () => void;
-  onAdded: () => void;
-}) {
-  const { t } = useI18n();
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState<FoundStudent[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [picked, setPicked] = useState<FoundStudent | null>(null);
-  const [type, setType] = useState<AddType>("REGULAR");
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Debounced search by name / student code (active students only).
-  useEffect(() => {
-    const text = q.trim();
-    if (picked || text.length < 2) {
-      setResults([]);
-      return;
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      setSearching(true);
-      apiGet<FoundStudent[]>(`/api/students?search=${encodeURIComponent(text)}&status=ACTIVE&pageSize=8`, controller.signal)
-        .then((res) => setResults(res.data))
-        .catch(() => {})
-        .finally(() => setSearching(false));
-    }, 300);
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [q, picked]);
-
-  const ownGroup = picked ? picked.group.id === groupId : true;
-  const typeOptions: AddType[] = ownGroup ? ["REGULAR", "LATE", "EXCUSED"] : ["MAKE_UP"];
-
-  function pick(student: FoundStudent) {
-    setPicked(student);
-    setType(student.group.id === groupId ? "REGULAR" : "MAKE_UP");
-    setError(null);
-  }
-
-  async function submit() {
-    if (!picked) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiPost(`/api/sessions/${sessionId}/students`, { studentId: picked.id, type, reason: reason.trim() });
-      onAdded();
-    } catch (err) {
-      setError(localizeError(err, t as (key: never) => string, hasDictKey));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const typeLabel = (v: AddType) =>
-    v === "REGULAR" ? t("lesson.present") : v === "LATE" ? t("lesson.late") : v === "EXCUSED" ? t("lesson.excused") : t("lesson.makeUp");
-
-  return (
-    <Modal
-      open
-      title={t("lesson.addStudentTitle")}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>
-            {t("common.cancel")}
-          </button>
-          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || !picked || reason.trim().length < 3}>
-            {busy ? t("common.loading") : t("lesson.addStudent")}
-          </button>
-        </>
-      }
-    >
-      <p className="text-sm text-black/60 dark:text-white/60">{t("lesson.addStudentHint")}</p>
-      <ErrorNotice message={error} />
-
-      {picked ? (
-        <div className="flex items-center justify-between gap-2 rounded-lg border border-black/10 p-3 text-sm dark:border-white/10">
-          <div className="min-w-0">
-            <div className="font-medium">{picked.fullName}</div>
-            <div className="text-xs text-black/55 dark:text-white/55">
-              <span className="font-mono">{picked.studentCode}</span> · {picked.group.name}
-              {!ownGroup && <span className="ms-2"><Badge tone="brand">{t("lesson.otherGroup")}</Badge></span>}
-            </div>
-          </div>
-          <button type="button" className="text-xs hover:underline" onClick={() => { setPicked(null); setQ(""); }}>
-            ×
-          </button>
-        </div>
-      ) : (
-        <Field label={t("lesson.pickStudent")}>
-          {(id) => (
-            <>
-              <input id={id} className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("lesson.searchStudent")} autoFocus />
-              {q.trim().length >= 2 && (
-                <ul className="mt-1 max-h-56 overflow-y-auto rounded-lg border border-black/10 text-sm dark:border-white/10">
-                  {results.map((s) => (
-                    <li key={s.id}>
-                      <button type="button" className="flex w-full items-center justify-between gap-2 p-2 text-start hover:bg-black/5 dark:hover:bg-white/10" onClick={() => pick(s)}>
-                        <span className="min-w-0 truncate">{s.fullName}</span>
-                        <span className="shrink-0 text-xs text-black/50 dark:text-white/50">
-                          <span className="font-mono">{s.studentCode}</span> · {s.group.name}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                  {!searching && results.length === 0 && <li className="p-2 text-black/50 dark:text-white/50">{t("lesson.noResults")}</li>}
-                </ul>
-              )}
-            </>
-          )}
-        </Field>
-      )}
-
-      {picked && (
-        <>
-          <Field label={t("lesson.attendanceType")}>
-            {(id) => (
-              <select id={id} className="input" value={type} onChange={(e) => setType(e.target.value as AddType)} disabled={typeOptions.length === 1}>
-                {typeOptions.map((v) => (
-                  <option key={v} value={v}>{typeLabel(v)}</option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <Field label={t("lesson.addReason")} required>
-            {(id) => <input id={id} className="input" value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} />}
-          </Field>
-        </>
-      )}
-    </Modal>
   );
 }
 
@@ -668,5 +523,206 @@ function ListSection({
         <table className="w-full min-w-[560px] text-start text-sm">{children}</table>
       )}
     </section>
+  );
+}
+
+interface PickedStudent {
+  id: string;
+  fullName: string;
+  studentCode: string;
+  groupId: string | null;
+}
+
+interface StudentHit {
+  id: string;
+  fullName: string;
+  studentCode: string;
+  group: { id: string; name: string } | null;
+}
+
+const ADD_TYPES = ["REGULAR", "LATE", "EXCUSED", "MAKE_UP"] as const;
+
+/** Adds one student to a lesson that is already closed (reason is mandatory and audited). */
+function AddStudentModal({
+  sessionId,
+  groupId,
+  initial,
+  onClose,
+  onAdded
+}: {
+  sessionId: string;
+  groupId: string;
+  initial: PickedStudent | null;
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const { t } = useI18n();
+  const [picked, setPicked] = useState<PickedStudent | null>(initial);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<StudentHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [type, setType] = useState<(typeof ADD_TYPES)[number]>(
+    initial && initial.groupId && initial.groupId !== groupId ? "MAKE_UP" : "REGULAR"
+  );
+  const [lateMin, setLateMin] = useState("");
+  const [reason, setReason] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const errText = (err: unknown) => localizeError(err, t as (key: never) => string, hasDictKey);
+
+  const otherGroup = Boolean(picked && picked.groupId && picked.groupId !== groupId);
+
+  async function search() {
+    const text = q.trim();
+    if (text.length < 2) return;
+    setSearching(true);
+    setError(null);
+    try {
+      const res = await apiGet<StudentHit[]>(`/api/students${qs({ search: text, pageSize: 8, status: "ACTIVE" })}`);
+      setHits(res.data);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function pick(hit: StudentHit) {
+    setPicked({ id: hit.id, fullName: hit.fullName, studentCode: hit.studentCode, groupId: hit.group?.id ?? null });
+    setType(hit.group && hit.group.id !== groupId ? "MAKE_UP" : "REGULAR");
+    setHits(null);
+  }
+
+  async function submit() {
+    if (!picked || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiPost(`/api/sessions/${sessionId}/add-student`, {
+        studentId: picked.id,
+        type,
+        reason: reason.trim(),
+        notes: notes.trim() || undefined,
+        lateMinutes: type === "LATE" && lateMin ? Number(lateMin) : undefined
+      });
+      onAdded();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const canSubmit = Boolean(picked) && reason.trim().length >= 3 && !busy;
+
+  return (
+    <Modal
+      open
+      title={t("lesson.addStudentTitle")}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>
+            {t("common.cancel")}
+          </button>
+          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={!canSubmit}>
+            {busy ? t("common.loading") : t("lesson.addConfirm")}
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="rounded-lg bg-tecno-gold/10 px-3 py-2 text-sm">{t("lesson.addStudentHint")}</p>
+        <ErrorNotice message={error} />
+
+        {picked ? (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-black/10 p-3 text-sm dark:border-white/10">
+            <div>
+              <div className="font-semibold">{picked.fullName}</div>
+              <div className="font-mono text-xs text-black/50 dark:text-white/50">{picked.studentCode}</div>
+            </div>
+            {!initial && (
+              <button type="button" className="text-xs hover:underline" onClick={() => setPicked(null)}>
+                {t("common.cancel")}
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void search();
+              }}
+            >
+              <input
+                className="input flex-1"
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={t("lesson.searchStudent")}
+                aria-label={t("lesson.searchStudent")}
+              />
+              <button type="submit" className="btn-primary" disabled={searching || q.trim().length < 2}>
+                {t("common.search")}
+              </button>
+            </form>
+            {hits && hits.length === 0 && <p className="text-sm text-black/50 dark:text-white/50">{t("lesson.noResults")}</p>}
+            {hits && hits.length > 0 && (
+              <ul className="divide-y divide-black/5 rounded-lg border border-black/10 dark:divide-white/5 dark:border-white/10">
+                {hits.map((h) => (
+                  <li key={h.id}>
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between gap-2 p-2 text-start text-sm hover:bg-black/5 dark:hover:bg-white/5"
+                      onClick={() => pick(h)}
+                    >
+                      <span>
+                        {h.fullName} <Code>{h.studentCode}</Code>
+                      </span>
+                      <span className="text-xs text-black/50 dark:text-white/50">{h.group?.name ?? ""}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {picked && (
+          <>
+            <Field label={t("lesson.addType")}>
+              {(id) => (
+                <select id={id} className="input" value={type} onChange={(e) => setType(e.target.value as (typeof ADD_TYPES)[number])}>
+                  {ADD_TYPES.map((k) => (
+                    <option key={k} value={k}>
+                      {t(`lesson.addType.${k}` as Parameters<typeof t>[0])}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            {otherGroup && type === "MAKE_UP" && (
+              <p className="text-xs text-black/60 dark:text-white/60">{t("lesson.otherGroupHint")}</p>
+            )}
+            {type === "LATE" && (
+              <Field label={t("lesson.lateAfter")}>
+                {(id) => (
+                  <input id={id} className="input" type="number" min={1} max={600} value={lateMin} onChange={(e) => setLateMin(e.target.value)} />
+                )}
+              </Field>
+            )}
+            <Field label={t("lesson.addReason")} hint={t("lesson.addReasonHint")} required>
+              {(id) => <input id={id} className="input" value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} />}
+            </Field>
+            <Field label={t("common.notes")}>
+              {(id) => <input id={id} className="input" value={notes} maxLength={500} onChange={(e) => setNotes(e.target.value)} />}
+            </Field>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }

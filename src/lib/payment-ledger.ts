@@ -5,11 +5,9 @@ import {
   buildLedger,
   currentYearMonth,
   dayOfMonthIn,
-  fromIndex,
   MAX_ADVANCE_MONTHS,
-  nextPayable,
   outstandingMonths,
-  ymIndex,
+  type ExemptionWindow,
   type GradeFeeLike,
   type LedgerEntry,
   type SubscriptionRowLike,
@@ -36,8 +34,6 @@ export interface LedgerEnv {
   currency: string;
   dueDay: number;
   allowPartial: boolean;
-  /** Months ahead of the current one that may be paid in advance (0 = disabled). */
-  advanceMonths: number;
   now: Date;
   current: YearMonth;
   dayOfMonth: number;
@@ -51,26 +47,43 @@ export async function loadLedgerEnv(organizationId: string, now = new Date()): P
     currency: center.currency || "EGP",
     dueDay: rules.dueDayOfMonth,
     allowPartial: rules.allowPartialPayments,
-    advanceMonths: Math.min(MAX_ADVANCE_MONTHS, Math.max(0, Math.floor(rules.advanceMonths ?? 0))),
     now,
     current: currentYearMonth(now, timeZone),
     dayOfMonth: dayOfMonthIn(now, timeZone)
   };
 }
 
-type PrismaLike = Pick<typeof db, "subscription" | "gradeFee">;
+type PrismaLike = Pick<typeof db, "subscription" | "gradeFee" | "student">;
+
+/** First day (UTC) of a stored exemption boundary → year/month in the center's time zone. */
+function boundaryYm(date: Date | null, timeZone: string): YearMonth | null {
+  return date ? currentYearMonth(date, timeZone) : null;
+}
+
+/**
+ * The months a student owes nothing, from the Student exemption fields.
+ * Active exemption: open-ended. Removed exemption: only up to `feeExemptUntil`.
+ * Returns null when the student was never exempt (or the window is empty).
+ */
+export function exemptionWindowOf(
+  s: { feeExempt: boolean; feeExemptFrom: Date | null; feeExemptUntil: Date | null },
+  timeZone: string
+): ExemptionWindow | null {
+  const from = boundaryYm(s.feeExemptFrom, timeZone);
+  if (s.feeExempt) return { from, until: null };
+  const until = boundaryYm(s.feeExemptUntil, timeZone);
+  if (!until) return null;
+  if (from && from.year * 12 + from.month > until.year * 12 + until.month) return null;
+  return { from, until };
+}
 
 export async function loadLedgers(
   organizationId: string,
   students: LedgerStudent[],
   env: LedgerEnv,
   client: PrismaLike = db,
-  /**
-   * Include the allowed advance months after the current one. Only the payment
-   * screens/APIs pass `true`; every report, notice and warning keeps the default
-   * (current month and earlier) so an unpaid FUTURE month can never look like a debt.
-   */
-  options: { advance?: boolean } = {}
+  /** includeFuture: also build the months after the current one (advance payment screens only). */
+  opts: { includeFuture?: boolean } = {}
 ): Promise<Map<string, LedgerEntry[]>> {
   const result = new Map<string, LedgerEntry[]>();
   if (students.length === 0) return result;
@@ -78,7 +91,7 @@ export async function loadLedgers(
   const ids = students.map((s) => s.id);
   const gradeIds = Array.from(new Set(students.map((s) => s.gradeId)));
 
-  const [rowsRaw, feesRaw] = await Promise.all([
+  const [rowsRaw, feesRaw, exemptRaw] = await Promise.all([
     client.subscription.findMany({
       where: { organizationId, studentId: { in: ids } },
       select: {
@@ -96,8 +109,18 @@ export async function loadLedgers(
     client.gradeFee.findMany({
       where: { organizationId, gradeId: { in: gradeIds } },
       select: { gradeId: true, amount: true, effectiveFrom: true }
+    }),
+    // Always read the exemption here (not from the caller) so EVERY screen that
+    // builds a ledger — payments, roster, dashboard, notices, attendance
+    // warning — applies it identically and can never disagree.
+    client.student.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, feeExempt: true, feeExemptFrom: true, feeExemptUntil: true }
     })
   ]);
+  const exemptionByStudent = new Map<string, ExemptionWindow | null>(
+    exemptRaw.map((e): [string, ExemptionWindow | null] => [e.id, exemptionWindowOf(e, env.timeZone)])
+  );
 
   const rowsByStudent = new Map<string, (SubscriptionRowLike & { studentId: string })[]>();
   for (const r of rowsRaw) {
@@ -124,9 +147,6 @@ export async function loadLedgers(
   }
 
   const monthOf = (d: Date) => currentYearMonth(d, env.timeZone);
-  const end = options.advance && env.advanceMonths > 0
-    ? fromIndex(ymIndex(env.current) + env.advanceMonths)
-    : env.current;
 
   for (const s of students) {
     const rows = rowsByStudent.get(s.id) ?? [];
@@ -141,11 +161,12 @@ export async function loadLedgers(
       buildLedger({
         start,
         current: env.current,
-        end,
         rows,
         fees: feesByGrade.get(s.gradeId) ?? [],
         dueDay: env.dueDay,
-        now: env.now
+        now: env.now,
+        exemption: exemptionByStudent.get(s.id) ?? null,
+        ahead: opts.includeFuture ? MAX_ADVANCE_MONTHS : 0
       })
     );
   }
@@ -159,8 +180,6 @@ export function summarize(ledger: LedgerEntry[]) {
   return {
     outstanding,
     oldest: outstanding[0] ?? null,
-    /** Oldest debt, else the first open advance month (what the cashier should collect next). */
-    nextPayable: nextPayable(ledger),
     totalDue: Math.round(outstanding.reduce((s, e) => s + e.remaining, 0) * 100) / 100,
     lastPaidMonth: last ? { year: last.year, month: last.month } : null
   };
@@ -180,6 +199,7 @@ export function serializeEntry(e: LedgerEntry) {
     dueDate: e.dueDate.toISOString(),
     virtual: e.virtual,
     refunded: e.refunded,
+    exempt: e.exempt,
     future: e.future
   };
 }

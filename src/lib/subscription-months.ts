@@ -57,16 +57,29 @@ export interface LedgerEntry extends YearMonth {
   dueDate: Date;
   virtual: boolean;
   refunded: boolean;
+  /** True when the month is WAIVED because the student is exempt from monthly fees. */
+  exempt: boolean;
   /**
-   * True for a month AFTER the current one (advance payment). Future months are
-   * never debts: they are not "outstanding", never overdue, and never block anything.
+   * True for a month AFTER the current one (advance payment). Future months can
+   * be paid early but are never a debt: they are excluded from outstanding /
+   * overdue calculations until their month actually arrives.
    */
   future: boolean;
 }
 
+/**
+ * Months during which a student owes nothing. `from: null` = since the very
+ * first month, `until: null` = still running (open-ended).
+ */
+export interface ExemptionWindow {
+  from: YearMonth | null;
+  until: YearMonth | null;
+}
+
 export const MAX_LOOKBACK_MONTHS = 24;
-/** Upper bound for how many months ahead a month may be paid. */
-export const MAX_ADVANCE_MONTHS = 12;
+
+/** How many months AFTER the current month a student may pay in advance. */
+export const MAX_ADVANCE_MONTHS = 3;
 
 export function ymKey(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;
@@ -151,6 +164,24 @@ export function ledgerStatus(params: {
   return "UNPAID";
 }
 
+export function inExemption(window: ExemptionWindow | null | undefined, ym: YearMonth): boolean {
+  if (!window) return false;
+  if (window.from && compareYm(ym, window.from) < 0) return false;
+  if (window.until && compareYm(ym, window.until) > 0) return false;
+  return true;
+}
+
+/**
+ * Applies a fee exemption to one ledger entry. Money that was really
+ * collected is never erased: a month that is already fully PAID stays PAID.
+ * Every other month inside the window becomes WAIVED with nothing remaining,
+ * so it can never show up as a debt, an overdue notice or a shortfall.
+ */
+function applyExemption(entry: LedgerEntry, window: ExemptionWindow | null | undefined): LedgerEntry {
+  if (!inExemption(window, entry) || entry.status === "PAID") return entry;
+  return { ...entry, status: "WAIVED", remaining: 0, exempt: true };
+}
+
 /**
  * Builds the ledger. `fees` are all fees ever configured for the student's
  * grade (history included). Months without a row and without any fee get
@@ -160,12 +191,14 @@ export function ledgerStatus(params: {
 export function buildLedger(params: {
   start: YearMonth;
   current: YearMonth;
-  /** Last month to include. Defaults to `current`; pass a later month to expose advance months. */
-  end?: YearMonth;
   rows: SubscriptionRowLike[];
   fees: GradeFeeLike[];
   dueDay: number;
   now: Date;
+  /** Student fee exemption, if any (see ExemptionWindow). */
+  exemption?: ExemptionWindow | null;
+  /** Extra months after `current` to include for advance payment (0 = none). */
+  ahead?: number;
 }): LedgerEntry[] {
   const byKey = new Map<string, SubscriptionRowLike[]>();
   for (const row of params.rows) {
@@ -173,13 +206,13 @@ export function buildLedger(params: {
     byKey.set(key, [...(byKey.get(key) ?? []), row]);
   }
 
-  const end = params.end && compareYm(params.end, params.current) > 0 ? params.end : params.current;
-
-  return monthRange(params.start, end).map((ym) => {
+  const ahead = Math.min(MAX_ADVANCE_MONTHS, Math.max(0, Math.floor(params.ahead ?? 0)));
+  const last = fromIndex(ymIndex(params.current) + ahead);
+  const built = monthRange(params.start, last).map((ym) => {
     const key = ymKey(ym.year, ym.month);
+    const future = compareYm(ym, params.current) > 0;
     const rows = byKey.get(key) ?? [];
     const dueDate = dueDateFor(ym, params.dueDay);
-    const future = compareYm(ym, params.current) > 0;
 
     if (rows.length === 0) {
       const amount = feeForMonth(params.fees, ym) ?? 0;
@@ -195,6 +228,7 @@ export function buildLedger(params: {
         dueDate,
         virtual: true,
         refunded: false,
+        exempt: false,
         future
       };
     }
@@ -216,9 +250,12 @@ export function buildLedger(params: {
       dueDate,
       virtual: false,
       refunded: rows.some((r) => r.hadRefund),
+      exempt: false,
       future
     };
   });
+
+  return params.exemption ? built.map((e) => applyExemption(e, params.exemption)) : built;
 }
 
 export function isOpen(entry: LedgerEntry): boolean {
@@ -227,7 +264,7 @@ export function isOpen(entry: LedgerEntry): boolean {
 
 /**
  * Months still owing, oldest first. Zero-priced virtual months are not debts,
- * and neither are future (advance) months — nobody owes a month that has not started.
+ * and neither are future months (they can only be paid early, never be late).
  */
 export function outstandingMonths(ledger: LedgerEntry[]): LedgerEntry[] {
   return ledger
@@ -239,45 +276,38 @@ export type PayCheck =
   | { ok: true; entry: LedgerEntry }
   | {
       ok: false;
-      reason: "NOT_IN_LEDGER" | "ALREADY_PAID" | "NO_PRICE" | "OUT_OF_ORDER";
+      reason: "NOT_IN_LEDGER" | "ALREADY_PAID" | "NO_PRICE" | "OUT_OF_ORDER" | "EXEMPT";
       oldest?: LedgerEntry;
     };
 
 /**
- * The month a cashier should collect next: the oldest debt, or — when nothing is
- * owed — the first advance month that is still open and has a price.
- */
-export function nextPayable(ledger: LedgerEntry[]): LedgerEntry | null {
-  const oldest = outstandingMonths(ledger)[0];
-  if (oldest) return oldest;
-  const advance = ledger
-    .filter((e) => e.future && isOpen(e) && e.remaining > 0 && !(e.virtual && e.amount <= 0))
-    .sort((a, b) => ymIndex(a) - ymIndex(b))[0];
-  return advance ?? null;
-}
-
-/**
  * The central financial rule: a month may only be paid when no EARLIER month
  * is still owing. Enforced by the API inside the payment transaction.
- *
- * Advance months follow the same rule: November cannot be paid while October
- * (or an earlier advance month) is still open. A month that is not part of the
- * ledger window (beyond the allowed advance range) is `NOT_IN_LEDGER`.
  */
 export function checkPayable(ledger: LedgerEntry[], target: YearMonth): PayCheck {
   const entry = ledger.find((e) => e.year === target.year && e.month === target.month);
   if (!entry) return { ok: false, reason: "NOT_IN_LEDGER" };
+  if (entry.exempt) return { ok: false, reason: "EXEMPT" };
   if (entry.status === "PAID" || entry.status === "WAIVED" || entry.remaining <= 0) {
     return { ok: false, reason: "ALREADY_PAID" };
   }
   if (entry.virtual && entry.amount <= 0) return { ok: false, reason: "NO_PRICE" };
-  // Earlier months still open — including earlier ADVANCE months, so advance
-  // payments are also taken in order.
+  // Order check also looks at future months: December cannot be paid in advance
+  // while November (also in advance) is still open.
   const oldest = ledger
-    .filter((e) => compareYm(e, entry) < 0 && isOpen(e) && e.remaining > 0 && !(e.virtual && e.amount <= 0))
+    .filter((e) => isOpen(e) && e.remaining > 0)
     .sort((a, b) => ymIndex(a) - ymIndex(b))[0];
-  if (oldest) return { ok: false, reason: "OUT_OF_ORDER", oldest };
+  if (oldest && compareYm(oldest, entry) < 0) {
+    return { ok: false, reason: "OUT_OF_ORDER", oldest };
+  }
   return { ok: true, entry };
+}
+
+/** Keys ("2026-11") of every month that can be paid right now (current/overdue AND advance). */
+export function payableKeys(ledger: LedgerEntry[]): string[] {
+  return ledger
+    .filter((e) => checkPayable(ledger, e).ok)
+    .map((e) => e.key);
 }
 
 /** Whether the student has an overdue-notice-worthy month (current month past the due day, or older). */
