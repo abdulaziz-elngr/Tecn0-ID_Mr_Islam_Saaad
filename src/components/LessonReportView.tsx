@@ -240,7 +240,7 @@ export function LessonReportView({
               {t("lesson.close")}
             </button>
           )}
-          {lesson.status === "COMPLETED" && perms.has("attendance.update") && (
+          {lesson.status === "COMPLETED" && (perms.has("attendance.update") || perms.has("attendance.create") || perms.has("sessions.update")) && (
             <button type="button" className="btn-secondary" onClick={() => setAddOpen(true)}>
               {t("lesson.addStudent")}
             </button>

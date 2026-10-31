@@ -30,6 +30,9 @@ import { DEFAULT_TIME_ZONE, sessionStartInstant } from "./tz";
 /** Permissions that may open/close a lesson: the lesson managers and anyone who records attendance. */
 export const LESSON_LIFECYCLE_PERMISSIONS = ["sessions.update", "attendance.create"] as const;
 
+/** Who may add a student to an already CLOSED lesson (reason required, always audited). */
+export const ADD_AFTER_CLOSE_PERMISSIONS = ["attendance.update", "attendance.create", "sessions.update"] as const;
+
 function canSeeFees(ctx: AuthContext): boolean {
   return ctx.permissions.has("subscriptions.view") || ctx.permissions.has("payments.view");
 }
