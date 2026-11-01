@@ -26,6 +26,7 @@ interface SettingsData {
     defaultMonthlyAmount: number;
     dueDayOfMonth: number;
     allowPartialPayments: boolean;
+    billingStartMonth: string | null;
   };
   analyticsThresholds: {
     lowAttendancePercent: number;
@@ -229,6 +230,19 @@ export default function SettingsPage() {
                 className="input"
                 value={form.paymentRules.dueDayOfMonth}
                 onChange={(e) => setForm({ ...form, paymentRules: { ...form.paymentRules, dueDayOfMonth: Number(e.target.value) } })}
+              />
+            )}
+          </Field>
+          <Field label="Collect fees from month (earlier months are not owed) · بداية التحصيل من شهر">
+            {(id) => (
+              <input
+                id={id}
+                type="month"
+                className="input"
+                value={form.paymentRules.billingStartMonth ?? ""}
+                onChange={(e) =>
+                  setForm({ ...form, paymentRules: { ...form.paymentRules, billingStartMonth: e.target.value || null } })
+                }
               />
             )}
           </Field>

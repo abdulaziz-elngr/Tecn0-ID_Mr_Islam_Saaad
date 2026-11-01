@@ -42,7 +42,12 @@ const updateSchema = z.object({
     .object({
       defaultMonthlyAmount: z.number().min(0).max(1_000_000).optional(),
       dueDayOfMonth: z.number().int().min(1).max(28).optional(),
-      allowPartialPayments: z.boolean().optional()
+      allowPartialPayments: z.boolean().optional(),
+      billingStartMonth: z
+        .string()
+        .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use the format YYYY-MM.")
+        .nullable()
+        .optional()
     })
     .optional(),
   analyticsThresholds: z

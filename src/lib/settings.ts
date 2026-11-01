@@ -25,12 +25,15 @@ export interface PaymentRules {
   defaultMonthlyAmount: number;
   dueDayOfMonth: number;
   allowPartialPayments: boolean;
+  /** "YYYY-MM": first month the center collects fees. Earlier months are never owed. null = no limit. */
+  billingStartMonth: string | null;
 }
 
 export const DEFAULT_PAYMENT_RULES: PaymentRules = {
   defaultMonthlyAmount: 500,
   dueDayOfMonth: 5,
-  allowPartialPayments: true
+  allowPartialPayments: true,
+  billingStartMonth: null
 };
 
 export function clearSettingsCache(): void {

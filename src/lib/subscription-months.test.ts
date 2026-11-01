@@ -7,6 +7,7 @@ import {
   outstandingMonths,
   overdueMonths,
   paidMessage,
+  parseYearMonth,
   payableKeys,
   unpaidMessage,
   type SubscriptionRowLike
@@ -160,6 +161,32 @@ describe("billingStart", () => {
     expect(billingStart({ enrollmentDate: new Date("2026-09-10T00:00:00Z"), rows: [{ periodYear: 2026, periodMonth: 7 }], current })).toEqual({ year: 2026, month: 7 });
     expect(billingStart({ enrollmentDate: new Date("2020-01-01T00:00:00Z"), rows: [], current })).toEqual({ year: 2024, month: 11 });
     expect(billingStart({ enrollmentDate: new Date("2027-01-01T00:00:00Z"), rows: [], current })).toEqual(current);
+  });
+
+  it("center-wide floor hides earlier months so November can be paid with October unpaid", () => {
+    const current = { year: 2026, month: 11 };
+    const floor = { year: 2026, month: 11 };
+    const rows = [{ periodYear: 2026, periodMonth: 10 }];
+    const start = billingStart({ enrollmentDate: new Date("2026-01-01T00:00:00Z"), rows, current, floor });
+    expect(start).toEqual(floor);
+
+    const ledger = buildLedger({
+      start,
+      current,
+      rows: [{ id: "o", periodYear: 2026, periodMonth: 10, amount: 100, discount: 0, paidAmount: 0, status: "OVERDUE" }],
+      fees: [{ amount: 100, effectiveFrom: new Date("2026-01-01T00:00:00Z") }],
+      dueDay: 5,
+      now: new Date("2026-11-01T08:00:00Z")
+    });
+    expect(outstandingMonths(ledger).some((e) => e.month === 10)).toBe(false);
+    expect(checkPayable(ledger, current).ok).toBe(true);
+  });
+
+  it("parseYearMonth accepts only YYYY-MM", () => {
+    expect(parseYearMonth("2026-11")).toEqual({ year: 2026, month: 11 });
+    expect(parseYearMonth("2026-13")).toBeNull();
+    expect(parseYearMonth("")).toBeNull();
+    expect(parseYearMonth(null)).toBeNull();
   });
 });
 

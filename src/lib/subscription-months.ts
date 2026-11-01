@@ -132,6 +132,12 @@ export function billingStart(params: {
   rows: Pick<SubscriptionRowLike, "periodYear" | "periodMonth">[];
   current: YearMonth;
   timeZoneMonthOf?: (d: Date) => YearMonth;
+  /**
+   * Center-wide "collect from" month. Months before it are never billed, so
+   * they are neither a debt nor block paying later months. Existing
+   * subscription rows before it are left untouched in the database.
+   */
+  floor?: YearMonth | null;
 }): YearMonth {
   const monthOf =
     params.timeZoneMonthOf ??
@@ -143,8 +149,15 @@ export function billingStart(params: {
   }
   const floor = fromIndex(ymIndex(params.current) - (MAX_LOOKBACK_MONTHS - 1));
   if (compareYm(start, floor) < 0) start = floor;
+  if (params.floor && compareYm(start, params.floor) < 0) start = params.floor;
   if (compareYm(start, params.current) > 0) start = params.current;
   return start;
+}
+
+/** Parses a "YYYY-MM" setting value; returns null for anything invalid/empty. */
+export function parseYearMonth(value: string | null | undefined): YearMonth | null {
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(value ?? "");
+  return m ? { year: Number(m[1]), month: Number(m[2]) } : null;
 }
 
 export function ledgerStatus(params: {

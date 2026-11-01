@@ -7,6 +7,7 @@ import {
   dayOfMonthIn,
   MAX_ADVANCE_MONTHS,
   outstandingMonths,
+  parseYearMonth,
   type ExemptionWindow,
   type GradeFeeLike,
   type LedgerEntry,
@@ -37,6 +38,8 @@ export interface LedgerEnv {
   now: Date;
   current: YearMonth;
   dayOfMonth: number;
+  /** Center-wide first billable month (Settings → Payment rules); null = no limit. */
+  billingFloor: YearMonth | null;
 }
 
 export async function loadLedgerEnv(organizationId: string, now = new Date()): Promise<LedgerEnv> {
@@ -49,7 +52,8 @@ export async function loadLedgerEnv(organizationId: string, now = new Date()): P
     allowPartial: rules.allowPartialPayments,
     now,
     current: currentYearMonth(now, timeZone),
-    dayOfMonth: dayOfMonthIn(now, timeZone)
+    dayOfMonth: dayOfMonthIn(now, timeZone),
+    billingFloor: parseYearMonth(rules.billingStartMonth)
   };
 }
 
@@ -154,7 +158,8 @@ export async function loadLedgers(
       enrollmentDate: s.enrollmentDate,
       rows,
       current: env.current,
-      timeZoneMonthOf: monthOf
+      timeZoneMonthOf: monthOf,
+      floor: env.billingFloor
     });
     result.set(
       s.id,
