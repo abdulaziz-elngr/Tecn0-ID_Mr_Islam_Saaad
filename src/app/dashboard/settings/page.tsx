@@ -40,11 +40,11 @@ interface SettingsData {
 
 const AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
 
-/** "YYYY-MM" choices (previous year → +2 years). A saved value outside the range is kept so it never disappears. */
+/** "YYYY-MM" choices (current year → +2 years). A saved value outside the range is kept so it never disappears. */
 function billingMonthOptions(selected: string | null): { value: string; label: string }[] {
   const year = new Date().getFullYear();
   const out: { value: string; label: string }[] = [];
-  for (let y = year - 1; y <= year + 2; y++) {
+  for (let y = year; y <= year + 2; y++) {
     for (let m = 1; m <= 12; m++) {
       out.push({ value: `${y}-${String(m).padStart(2, "0")}`, label: `${AR_MONTHS[m - 1]} ${y} (${y}-${String(m).padStart(2, "0")})` });
     }
