@@ -38,6 +38,21 @@ interface SettingsData {
   };
 }
 
+const AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+
+/** "YYYY-MM" choices (previous year → +2 years). A saved value outside the range is kept so it never disappears. */
+function billingMonthOptions(selected: string | null): { value: string; label: string }[] {
+  const year = new Date().getFullYear();
+  const out: { value: string; label: string }[] = [];
+  for (let y = year - 1; y <= year + 2; y++) {
+    for (let m = 1; m <= 12; m++) {
+      out.push({ value: `${y}-${String(m).padStart(2, "0")}`, label: `${AR_MONTHS[m - 1]} ${y} (${y}-${String(m).padStart(2, "0")})` });
+    }
+  }
+  if (selected && !out.some((o) => o.value === selected)) out.unshift({ value: selected, label: selected });
+  return out;
+}
+
 export default function SettingsPage() {
   const { t } = useI18n();
   const toast = useToast();
@@ -235,15 +250,21 @@ export default function SettingsPage() {
           </Field>
           <Field label="Collect fees from month (earlier months are not owed) · بداية التحصيل من شهر">
             {(id) => (
-              <input
+              <select
                 id={id}
-                type="month"
                 className="input"
                 value={form.paymentRules.billingStartMonth ?? ""}
                 onChange={(e) =>
                   setForm({ ...form, paymentRules: { ...form.paymentRules, billingStartMonth: e.target.value || null } })
                 }
-              />
+              >
+                <option value="">— بدون حد / No limit —</option>
+                {billingMonthOptions(form.paymentRules.billingStartMonth).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             )}
           </Field>
           <label className="flex items-center gap-2 text-sm">
