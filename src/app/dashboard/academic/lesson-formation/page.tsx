@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { hasDictKey, useI18n } from "@/lib/i18n";
-import { apiDelete, apiPost, currentMonth, qs, useApi } from "@/lib/client";
+import { apiDelete, apiPost, apiPut, currentMonth, qs, useApi } from "@/lib/client";
+import { generateMonthlyLessons } from "@/lib/lesson-plan";
 import {
   dayName,
   fmt,
@@ -15,7 +16,7 @@ import {
   weekdayLabel
 } from "@/lib/lesson-format";
 import { MonthYearPicker } from "@/components/MonthYearPicker";
-import { Badge, ConfirmDialog, DataTable, ErrorNotice, Field, PageHeader, useToast } from "@/components/ui";
+import { Badge, ConfirmDialog, DataTable, ErrorNotice, Field, Modal, PageHeader, useToast } from "@/components/ui";
 
 /**
  * تشكيل الحصص — Lesson formation (Stage 2).
@@ -80,6 +81,187 @@ interface PlanRow {
 }
 
 const slotKey = (l: { date: string; startMinutes: number }) => `${l.date}|${l.startMinutes}`;
+
+interface EditRow {
+  date: string;
+  dayOfWeek: string;
+  startMinutes: number;
+  endMinutes: number;
+  sessionId: string | null;
+  lessonNumber: number | null;
+  status: string | null;
+  attendanceCount: number;
+  locked: boolean;
+  adoptsSessionId: string | null;
+}
+
+interface EditView {
+  plan: { id: string; year: number; month: number; lessonsPerWeek: number };
+  group: { name: string; subject: { name: string } | null };
+  slots: { dayOfWeek: string; startMinutes: number; endMinutes: number }[];
+  rows: EditRow[];
+}
+
+/**
+ * Edits a formed plan: tick a date to add a lesson, untick to remove it.
+ * Lessons with history are locked (the server enforces this too) and the
+ * remaining lessons are renumbered by date.
+ */
+function EditPlanModal({ planId, onClose, onSaved }: { planId: string; onClose: () => void; onSaved: () => void }) {
+  const { t, locale } = useI18n();
+  const toast = useToast();
+  const view = useApi<EditView>(`/api/lesson-plans/${planId}`);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [perWeek, setPerWeek] = useState(1);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const rows = view.data?.rows ?? [];
+
+  // Start from what the plan currently contains.
+  useEffect(() => {
+    if (!view.data) return;
+    setPicked(new Set(view.data.rows.filter((r) => r.sessionId).map(slotKey)));
+    setPerWeek(view.data.plan.lessonsPerWeek);
+  }, [view.data]);
+
+  const isOn = (r: EditRow) => r.locked || picked.has(slotKey(r));
+  const chosen = rows.filter(isOn);
+  const added = rows.filter((r) => !r.sessionId && picked.has(slotKey(r)));
+  const removed = rows.filter((r) => r.sessionId && !r.locked && !picked.has(slotKey(r)));
+  const slotLimit = view.data?.slots.length ?? 14;
+  const changed = added.length > 0 || removed.length > 0 || perWeek !== view.data?.plan.lessonsPerWeek;
+
+  function applyPerWeek() {
+    if (!view.data) return;
+    const generated = generateMonthlyLessons({
+      year: view.data.plan.year,
+      month: view.data.plan.month,
+      slots: view.data.slots as never,
+      lessonsPerWeek: perWeek
+    });
+    const next = new Set(generated.lessons.map(slotKey));
+    for (const r of rows) if (r.locked) next.add(slotKey(r));
+    setPicked(next);
+  }
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await apiPut<{ total: number; created: number; adopted: number; removed: number }>(
+        `/api/lesson-plans/${planId}`,
+        {
+          lessonsPerWeek: perWeek,
+          lessons: chosen.map((r) => ({ date: r.date, startMinutes: r.startMinutes }))
+        }
+      );
+      toast.success(
+        fmt(t("lf.editSaved"), { added: result.created + result.adopted, removed: result.removed, total: result.total })
+      );
+      onSaved();
+    } catch (err) {
+      setError(localizeError(err, t as (key: never) => string, hasDictKey));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      title={view.data ? `${t("lf.editTitle")} — ${view.data.group.name} · ${monthLabel(view.data.plan.year, view.data.plan.month, locale)}` : t("lf.editTitle")}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button type="button" className="btn-primary" disabled={saving || !changed || chosen.length === 0} onClick={save}>
+            {saving ? t("common.loading") : t("lf.editSave")}
+          </button>
+        </>
+      }
+    >
+      <ErrorNotice message={view.error ?? error} />
+      {view.loading && <p className="text-sm text-black/55 dark:text-white/55">{t("common.loading")}</p>}
+
+      {view.data && (
+        <>
+          <p className="text-sm text-black/60 dark:text-white/60">{t("lf.editHint")}</p>
+
+          <div className="flex flex-wrap items-end gap-2">
+            <Field label={t("lf.lessonsPerWeek")} hint={t("lf.editApplyHint")}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="number"
+                  className="input w-24"
+                  min={1}
+                  max={Math.max(1, slotLimit)}
+                  value={perWeek}
+                  onChange={(e) => setPerWeek(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                />
+              )}
+            </Field>
+            <button type="button" className="btn-secondary mb-5" onClick={applyPerWeek}>
+              {t("lf.editApplyPerWeek")}
+            </button>
+          </div>
+
+          <ul className="divide-y divide-black/5 rounded-lg border border-black/5 dark:divide-white/10 dark:border-white/10">
+            {rows.map((r) => {
+              const key = slotKey(r);
+              const on = isOn(r);
+              const number = on ? chosen.findIndex((c) => slotKey(c) === key) + 1 : null;
+              return (
+                <li key={key} className={`flex items-center gap-3 p-3 text-sm ${on ? "" : "opacity-50"}`}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={r.locked}
+                    aria-label={formatLessonDate(r.date)}
+                    onChange={() =>
+                      setPicked((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(key)) next.delete(key);
+                        else next.add(key);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="w-6 text-center font-semibold">{number ?? "—"}</span>
+                  <span className="min-w-0 flex-1">
+                    {weekdayLabel(r.date, locale)} · {formatLessonDate(r.date)}
+                    <span className="block text-xs text-black/55 dark:text-white/55">
+                      {formatTimeRange(r.startMinutes, r.endMinutes, locale)}
+                    </span>
+                  </span>
+                  {r.locked && (
+                    <span title={t("lf.editLocked")} className="flex items-center gap-1">
+                      🔒
+                      {r.status && <Badge tone="neutral">{t(`lesson.status.${r.status}` as never)}</Badge>}
+                    </span>
+                  )}
+                  {!r.sessionId && picked.has(key) && <Badge tone="brand">{t("lf.editNew")}</Badge>}
+                  {!r.sessionId && picked.has(key) && r.adoptsSessionId && (
+                    <span className="text-xs text-amber-700 dark:text-amber-300">{t("lf.adopts")}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+
+          {removed.length > 0 && (
+            <p className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              {fmt(t("lf.editRemovedCount"), { count: removed.length })}
+            </p>
+          )}
+        </>
+      )}
+    </Modal>
+  );
+}
 
 export default function LessonFormationPage() {
   const { t, locale } = useI18n();
@@ -173,6 +355,7 @@ export default function LessonFormationPage() {
     ym ? `/api/lesson-plans${qs({ year: ym.year, month: ym.month, stageId, gradeId, subjectId })}` : null
   );
   const [toDelete, setToDelete] = useState<PlanRow | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   async function confirmPlan() {
@@ -475,6 +658,13 @@ export default function LessonFormationPage() {
                 >
                   {t("lf.openLessons")}
                 </Link>
+                <button
+                  type="button"
+                  className="text-tecno-gold-dark hover:underline dark:text-tecno-gold"
+                  onClick={() => setEditingId(plan.id)}
+                >
+                  {t("lf.editPlan")}
+                </button>
                 {plan.deletable ? (
                   <button type="button" className="text-red-600 hover:underline dark:text-red-400" onClick={() => setToDelete(plan)}>
                     {t("lf.deletePlan")}
@@ -489,6 +679,18 @@ export default function LessonFormationPage() {
           ))}
         </DataTable>
       </div>
+
+      {editingId && (
+        <EditPlanModal
+          planId={editingId}
+          onClose={() => setEditingId(null)}
+          onSaved={() => {
+            setEditingId(null);
+            plans.reload();
+            setPreview(null);
+          }}
+        />
+      )}
 
       <ConfirmDialog
         open={!!toDelete}

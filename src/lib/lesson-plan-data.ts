@@ -6,8 +6,13 @@ import { writeAuditLog } from "./audit";
 import { resolveBranchScope, type AuthContext } from "./rbac";
 import { toDateOnly } from "./sessions";
 import {
+  computePlanEdit,
   generateMonthlyLessons,
+  slotOccurrencesInMonth,
   validateConfirmedLessons,
+  weekdayOf,
+  type WeekdayName,
+  type ExistingPlanLesson,
   type LessonPlanWarning,
   type PlannedLesson,
   type ScheduleSlot
@@ -436,4 +441,310 @@ export async function deletePlan(ctx: AuthContext, planId: string, ipAddress?: s
   });
 
   return { id: plan.id, removedLessons: plan.sessions.length };
+}
+
+/* ------------------------------------------------------------------ */
+/* Editing a formed plan                                               */
+/* ------------------------------------------------------------------ */
+
+/** A lesson is locked (never removable) once it has any history or linked work. */
+function isLessonLocked(s: {
+  status: string;
+  _count: { attendances: number; assignments: number };
+  recitationSession: { id: string } | null;
+}): boolean {
+  return (
+    s.status !== "SCHEDULED" || s._count.attendances > 0 || s._count.assignments > 0 || s.recitationSession !== null
+  );
+}
+
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Loads a plan inside the caller's scope, with its group and every lesson. */
+async function loadPlanScoped(ctx: AuthContext, planId: string) {
+  const plan = await db.lessonPlan.findFirst({
+    where: {
+      id: planId,
+      organizationId: ctx.organizationId,
+      ...(ctx.isOrgWide ? {} : { branchId: { in: ctx.branchIds } })
+    },
+    include: {
+      group: {
+        include: {
+          grade: { include: { stage: true } },
+          subject: true,
+          teacher: true,
+          schedules: { where: { isActive: true }, orderBy: [{ dayOfWeek: "asc" }, { startMinutes: "asc" }] }
+        }
+      },
+      sessions: {
+        orderBy: [{ date: "asc" }, { startMinutes: "asc" }],
+        include: {
+          _count: { select: { attendances: true, assignments: true } },
+          recitationSession: { select: { id: true } }
+        }
+      }
+    }
+  });
+  if (!plan) throw new NotFoundError("Lesson plan not found.");
+  assertGroupInScope(await resolveOwnGroupIds(ctx), plan.groupId);
+  return plan;
+}
+
+export interface PlanEditRow {
+  date: string;
+  dayOfWeek: WeekdayName;
+  startMinutes: number;
+  endMinutes: number;
+  /** null → a real slot date that is not (yet) part of the plan. */
+  sessionId: string | null;
+  lessonNumber: number | null;
+  status: LessonStatus | null;
+  attendanceCount: number;
+  /** Cannot be removed: opened / completed / cancelled / attended / has recitation or homework. */
+  locked: boolean;
+  /** A pre-existing (legacy) session in this slot that adding the date will adopt. */
+  adoptsSessionId: string | null;
+}
+
+export interface PlanEditView {
+  plan: { id: string; year: number; month: number; lessonsPerWeek: number };
+  group: {
+    id: string;
+    name: string;
+    grade: { id: string; name: string; stage: { id: string; name: string } };
+    subject: { id: string; name: string } | null;
+    teacher: { id: string; fullName: string } | null;
+  };
+  slots: ScheduleSlot[];
+  rows: PlanEditRow[];
+}
+
+/** Everything the edit screen needs: the plan's lessons plus the month's other real slot dates. */
+export async function getPlanForEdit(ctx: AuthContext, planId: string): Promise<PlanEditView> {
+  const plan = await loadPlanScoped(ctx, planId);
+  const slots: ScheduleSlot[] = plan.group.schedules.map((s) => ({
+    dayOfWeek: s.dayOfWeek as DayOfWeek,
+    startMinutes: s.startMinutes,
+    endMinutes: s.endMinutes
+  }));
+
+  const inPlan = new Map(plan.sessions.map((s) => [`${iso(s.date)}|${s.startMinutes}`, s]));
+  const occurrences = slotOccurrencesInMonth(plan.year, plan.month, slots);
+  const free = occurrences.filter((o) => !inPlan.has(`${o.date}|${o.startMinutes}`));
+
+  const legacy = free.length
+    ? await db.classSession.findMany({
+        where: { groupId: plan.groupId, planId: null, date: { in: free.map((o) => toDateOnly(o.date)) } },
+        select: { id: true, date: true, startMinutes: true }
+      })
+    : [];
+  const legacyBySlot = new Map(legacy.map((s) => [`${iso(s.date)}|${s.startMinutes}`, s.id]));
+
+  const rows: PlanEditRow[] = [
+    ...plan.sessions.map((s) => ({
+      date: iso(s.date),
+      dayOfWeek: weekdayOf(s.date),
+      startMinutes: s.startMinutes,
+      endMinutes: s.endMinutes,
+      sessionId: s.id,
+      lessonNumber: s.lessonNumber,
+      status: s.status as LessonStatus,
+      attendanceCount: s._count.attendances,
+      locked: isLessonLocked(s),
+      adoptsSessionId: null
+    })),
+    ...free.map((o) => ({
+      date: o.date,
+      dayOfWeek: o.dayOfWeek,
+      startMinutes: o.startMinutes,
+      endMinutes: o.endMinutes,
+      sessionId: null,
+      lessonNumber: null,
+      status: null,
+      attendanceCount: 0,
+      locked: false,
+      adoptsSessionId: legacyBySlot.get(`${o.date}|${o.startMinutes}`) ?? null
+    }))
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.startMinutes - b.startMinutes);
+
+  return {
+    plan: { id: plan.id, year: plan.year, month: plan.month, lessonsPerWeek: plan.lessonsPerWeek },
+    group: {
+      id: plan.group.id,
+      name: plan.group.name,
+      grade: {
+        id: plan.group.grade.id,
+        name: plan.group.grade.name,
+        stage: { id: plan.group.grade.stage.id, name: plan.group.grade.stage.name }
+      },
+      subject: plan.group.subject ? { id: plan.group.subject.id, name: plan.group.subject.name } : null,
+      teacher: plan.group.teacher ? { id: plan.group.teacher.id, fullName: plan.group.teacher.fullName } : null
+    },
+    slots,
+    rows
+  };
+}
+
+/**
+ * Edits a formed plan: add or remove dates and change lessons/week.
+ *  - Lessons with history (opened, completed, cancelled, attended, recitation,
+ *    homework) are always kept — the client cannot remove them.
+ *  - Untouched lessons keep their id (so nothing linked to them is lost).
+ *  - All remaining lessons are renumbered 1..n chronologically.
+ */
+export async function updatePlan(
+  ctx: AuthContext,
+  planId: string,
+  input: { lessonsPerWeek: number; lessons: { date: string; startMinutes: number }[] },
+  ipAddress?: string
+) {
+  const plan = await loadPlanScoped(ctx, planId);
+  const slots: ScheduleSlot[] = plan.group.schedules.map((s) => ({
+    dayOfWeek: s.dayOfWeek as DayOfWeek,
+    startMinutes: s.startMinutes,
+    endMinutes: s.endMinutes
+  }));
+
+  const existing: ExistingPlanLesson[] = plan.sessions.map((s) => ({
+    id: s.id,
+    date: iso(s.date),
+    startMinutes: s.startMinutes,
+    endMinutes: s.endMinutes,
+    locked: isLessonLocked(s)
+  }));
+
+  const edit = computePlanEdit({
+    year: plan.year,
+    month: plan.month,
+    slots,
+    existing,
+    requested: input.lessons
+  });
+  if (!edit.ok) {
+    throw new BusinessRuleError(
+      edit.reason === "NO_LESSONS"
+        ? "Select at least one lesson, or delete the plan."
+        : edit.reason === "DUPLICATE_DATE"
+          ? `The lesson on ${edit.date} was submitted twice.`
+          : `${edit.date} is not one of this group's scheduled lesson days.`,
+      { status: 400, code: edit.reason }
+    );
+  }
+
+  if (edit.add.length > 0) {
+    if (!plan.group.isActive) {
+      throw new BusinessRuleError("This group is inactive. Lessons cannot be added to it.", { code: "GROUP_INACTIVE" });
+    }
+    if (!plan.group.teacher || plan.group.teacher.deletedAt) {
+      throw new BusinessRuleError("Assign a teacher to this group before adding lessons.", {
+        code: "GROUP_HAS_NO_TEACHER"
+      });
+    }
+  }
+
+  const byId = new Map(plan.sessions.map((s) => [s.id, s]));
+  const changedNumbers = edit.keep.filter((k) => byId.get(k.id)?.lessonNumber !== k.lessonNumber);
+
+  const result = await db.$transaction(
+    async (tx) => {
+      // 1. Remove the unticked lessons — only if they are STILL untouched.
+      let removed = 0;
+      if (edit.remove.length > 0) {
+        const res = await tx.classSession.deleteMany({
+          where: {
+            id: { in: edit.remove },
+            planId: plan.id,
+            status: "SCHEDULED",
+            attendances: { none: {} },
+            assignments: { none: {} },
+            recitationSession: null
+          }
+        });
+        if (res.count !== edit.remove.length) {
+          throw new BusinessRuleError(
+            "A lesson was opened or changed while you were editing. Reload the page and try again.",
+            { status: 409, code: "LESSON_CHANGED" }
+          );
+        }
+        removed = res.count;
+      }
+
+      // 2. Park the kept lessons whose number changes on temporary negative numbers,
+      //    so the (planId, lessonNumber) unique index never collides mid-way.
+      for (const k of changedNumbers) {
+        await tx.classSession.update({ where: { id: k.id }, data: { lessonNumber: -k.lessonNumber } });
+      }
+
+      // 3. Add the new dates (adopting a legacy session in the same slot, like createPlan does).
+      let created = 0;
+      let adopted = 0;
+      for (const lesson of edit.add) {
+        const date = toDateOnly(lesson.date);
+        const legacy = await tx.classSession.findUnique({
+          where: { groupId_date_startMinutes: { groupId: plan.groupId, date, startMinutes: lesson.startMinutes } },
+          select: { id: true, planId: true }
+        });
+        if (legacy && legacy.planId === null) {
+          await tx.classSession.update({
+            where: { id: legacy.id },
+            data: { planId: plan.id, lessonNumber: lesson.lessonNumber }
+          });
+          adopted += 1;
+        } else if (legacy) {
+          throw new BusinessRuleError("A lesson for this slot already belongs to another plan.", {
+            status: 409,
+            code: "SLOT_TAKEN"
+          });
+        } else {
+          await tx.classSession.create({
+            data: {
+              organizationId: ctx.organizationId,
+              branchId: plan.branchId,
+              groupId: plan.groupId,
+              teacherId: plan.group.teacher!.id,
+              assistantId: plan.group.assistantId,
+              date,
+              startMinutes: lesson.startMinutes,
+              endMinutes: lesson.endMinutes,
+              planId: plan.id,
+              lessonNumber: lesson.lessonNumber
+            }
+          });
+          created += 1;
+        }
+      }
+
+      // 4. Final numbers for the parked lessons.
+      for (const k of changedNumbers) {
+        await tx.classSession.update({ where: { id: k.id }, data: { lessonNumber: k.lessonNumber } });
+      }
+
+      await tx.lessonPlan.update({ where: { id: plan.id }, data: { lessonsPerWeek: input.lessonsPerWeek } });
+      return { removed, created, adopted };
+    },
+    { timeout: 30000, maxWait: 10000 }
+  );
+
+  await writeAuditLog({
+    organizationId: ctx.organizationId,
+    actorUserId: ctx.userId,
+    action: "UPDATE_LESSON_PLAN",
+    entityType: "LessonPlan",
+    entityId: plan.id,
+    beforeValue: {
+      lessonsPerWeek: plan.lessonsPerWeek,
+      lessons: existing.map((l) => `${l.date} ${l.startMinutes}`)
+    },
+    afterValue: {
+      lessonsPerWeek: input.lessonsPerWeek,
+      removed: result.removed,
+      created: result.created,
+      adopted: result.adopted,
+      total: edit.keep.length + edit.add.length
+    },
+    ipAddress
+  });
+
+  return { planId: plan.id, ...result, total: edit.keep.length + edit.add.length };
 }

@@ -195,3 +195,68 @@ describe("validateConfirmedLessons (server-side guard on the reviewed preview)",
     });
   });
 });
+
+import { computePlanEdit, type ExistingPlanLesson } from "./lesson-plan";
+
+describe("computePlanEdit", () => {
+  // October 2026, Saturday + Tuesday, formed with 1 lesson/week → the 5 Saturdays.
+  const existing = (over: Partial<Record<string, boolean>> = {}): ExistingPlanLesson[] =>
+    ["2026-10-03", "2026-10-10", "2026-10-17", "2026-10-24", "2026-10-31"].map((date, i) => ({
+      id: `s${i + 1}`,
+      date,
+      startMinutes: 17 * 60,
+      endMinutes: 19 * 60,
+      locked: over[`s${i + 1}`] ?? false
+    }));
+  const req = (...dates: string[]) => dates.map((date) => ({ date, startMinutes: 17 * 60 }));
+
+  it("unticking an unlocked lesson removes it and renumbers the rest", () => {
+    const r = computePlanEdit({
+      year: 2026, month: 10, slots: SAT_TUE, existing: existing(),
+      requested: req("2026-10-03", "2026-10-17", "2026-10-24", "2026-10-31")
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.remove).toEqual(["s2"]);
+    expect(r.keep.map((k) => [k.id, k.lessonNumber])).toEqual([["s1", 1], ["s3", 2], ["s4", 3], ["s5", 4]]);
+    expect(r.add).toEqual([]);
+  });
+
+  it("never removes a locked lesson, even if the client leaves it out", () => {
+    const r = computePlanEdit({
+      year: 2026, month: 10, slots: SAT_TUE, existing: existing({ s1: true, s2: true }),
+      requested: req("2026-10-24")
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.keep.map((k) => k.id)).toEqual(["s1", "s2", "s4"]);
+    expect(r.remove).toEqual(["s3", "s5"]);
+  });
+
+  it("adds a real slot date and numbers it chronologically between existing lessons", () => {
+    const r = computePlanEdit({
+      year: 2026, month: 10, slots: SAT_TUE, existing: existing(),
+      requested: [...req("2026-10-03", "2026-10-10", "2026-10-17", "2026-10-24", "2026-10-31"), { date: "2026-10-13", startMinutes: 18 * 60 }]
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.add).toHaveLength(1);
+    expect(r.add[0]).toMatchObject({ date: "2026-10-13", lessonNumber: 3, endMinutes: 20 * 60, dayOfWeek: "TUESDAY" });
+    expect(r.keep.map((k) => k.lessonNumber)).toEqual([1, 2, 4, 5, 6]);
+  });
+
+  it("rejects dates that are not a scheduled slot, duplicates, and an empty result", () => {
+    const base = { year: 2026, month: 10, slots: SAT_TUE, existing: existing() };
+    expect(computePlanEdit({ ...base, requested: req("2026-10-04") })).toMatchObject({ ok: false, reason: "NOT_A_SCHEDULED_DAY" });
+    expect(computePlanEdit({ ...base, requested: req("2026-10-03", "2026-10-03") })).toMatchObject({ ok: false, reason: "DUPLICATE_DATE" });
+    expect(computePlanEdit({ ...base, requested: [] })).toMatchObject({ ok: false, reason: "NO_LESSONS" });
+  });
+
+  it("an empty request is fine when locked lessons remain", () => {
+    const r = computePlanEdit({
+      year: 2026, month: 10, slots: SAT_TUE, existing: existing({ s1: true }), requested: []
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.keep.map((k) => k.id)).toEqual(["s1"]);
+  });
+});

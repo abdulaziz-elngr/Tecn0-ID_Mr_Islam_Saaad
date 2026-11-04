@@ -258,3 +258,107 @@ export function validateConfirmedLessons(params: {
 export function weekdayIndex(day: WeekdayName): number {
   return WEEKDAYS.indexOf(day);
 }
+
+/* ------------------------------------------------------------------ */
+/* Editing an already-formed plan                                      */
+/* ------------------------------------------------------------------ */
+
+export interface ExistingPlanLesson {
+  id: string;
+  /** ISO calendar date, YYYY-MM-DD. */
+  date: string;
+  startMinutes: number;
+  endMinutes: number;
+  /**
+   * A lesson with history (opened, completed, cancelled, attended, or carrying
+   * a recitation / homework) is locked: an edit can never remove it.
+   */
+  locked: boolean;
+}
+
+export type PlanEditResult =
+  | {
+      ok: true;
+      /** Lessons that stay (always includes every locked lesson), with their new number. */
+      keep: { id: string; date: string; startMinutes: number; lessonNumber: number }[];
+      /** Unlocked lessons the administrator unticked. */
+      remove: string[];
+      /** New dates added to the plan (rebuilt from the trusted slot data). */
+      add: PlannedLesson[];
+    }
+  | { ok: false; reason: "NO_LESSONS" | "DUPLICATE_DATE" | "NOT_A_SCHEDULED_DAY"; date?: string };
+
+/**
+ * Works out what an edit does to a formed plan.
+ *
+ *  - A requested lesson must either already belong to the plan or be a real
+ *    slot occurrence of the month (the client never invents dates or times).
+ *  - Locked lessons are ALWAYS kept, even when the client leaves them out.
+ *  - Unlocked lessons that are not requested are removed.
+ *  - Everything that remains is numbered 1..n in chronological order.
+ */
+export function computePlanEdit(params: {
+  year: number;
+  month: number;
+  slots: ScheduleSlot[];
+  existing: ExistingPlanLesson[];
+  requested: { date: string; startMinutes: number }[];
+}): PlanEditResult {
+  const key = (l: { date: string; startMinutes: number }) => `${l.date}|${l.startMinutes}`;
+  const allowed = new Map(
+    slotOccurrencesInMonth(params.year, params.month, params.slots).map((o) => [key(o), o])
+  );
+  const existingByKey = new Map(params.existing.map((l) => [key(l), l]));
+
+  const seen = new Set<string>();
+  const add: Omit<PlannedLesson, "lessonNumber">[] = [];
+  const keepIds = new Set<string>();
+
+  for (const item of params.requested) {
+    const k = key(item);
+    if (seen.has(k)) return { ok: false, reason: "DUPLICATE_DATE", date: item.date };
+    seen.add(k);
+
+    const current = existingByKey.get(k);
+    if (current) {
+      keepIds.add(current.id);
+      continue;
+    }
+    const occurrence = allowed.get(k);
+    if (!occurrence) return { ok: false, reason: "NOT_A_SCHEDULED_DAY", date: item.date };
+    add.push(occurrence);
+  }
+
+  // History is never removed by an edit.
+  for (const lesson of params.existing) if (lesson.locked) keepIds.add(lesson.id);
+
+  const remove = params.existing.filter((l) => !keepIds.has(l.id)).map((l) => l.id);
+  const kept = params.existing.filter((l) => keepIds.has(l.id));
+
+  if (kept.length + add.length === 0) return { ok: false, reason: "NO_LESSONS" };
+
+  // One chronological numbering across kept + new lessons.
+  const all = [
+    ...kept.map((l) => ({ ...l, kind: "keep" as const })),
+    ...add.map((l) => ({ ...l, id: "", kind: "add" as const }))
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.startMinutes - b.startMinutes);
+
+  const keep: { id: string; date: string; startMinutes: number; lessonNumber: number }[] = [];
+  const added: PlannedLesson[] = [];
+  all.forEach((l, index) => {
+    const lessonNumber = index + 1;
+    if (l.kind === "keep") {
+      keep.push({ id: l.id, date: l.date, startMinutes: l.startMinutes, lessonNumber });
+    } else {
+      added.push({
+        lessonNumber,
+        date: l.date,
+        dayOfWeek: (l as Omit<PlannedLesson, "lessonNumber">).dayOfWeek,
+        startMinutes: l.startMinutes,
+        endMinutes: l.endMinutes
+      });
+    }
+  });
+
+  return { ok: true, keep, remove, add: added };
+}
